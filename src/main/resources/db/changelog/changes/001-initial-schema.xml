@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
+    <property name="idType" value="INTEGER" dbms="sqlite"/>
+    <property name="idType" value="BIGINT"/>
+    <property name="imageType" value="VARBINARY(5000000)" dbms="h2"/>
+    <property name="imageType" value="BLOB"/>
+    <property name="textType" value="VARCHAR(1000000)" dbms="h2"/>
+    <property name="textType" value="TEXT"/>
+
+    <changeSet id="001-initial-schema" author="higanbana">
+        <createTable tableName="novel">
+            <column name="id" type="${idType}" autoIncrement="true"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="version" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="title" type="VARCHAR(255)"/>
+            <column name="source" type="${textType}"/>
+        </createTable>
+        <createTable tableName="novel_character">
+            <column name="id" type="${idType}" autoIncrement="true"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="version" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="novel_id" type="BIGINT"><constraints nullable="false" references="novel(id)" foreignKeyName="fk_character_novel"/></column>
+            <column name="name" type="VARCHAR(120)"><constraints nullable="false"/></column>
+            <column name="description" type="${textType}"><constraints nullable="false"/></column>
+        </createTable>
+        <createIndex tableName="novel_character" indexName="idx_character_novel"><column name="novel_id"/></createIndex>
+
+        <createTable tableName="chunk_plan">
+            <column name="id" type="${idType}" autoIncrement="true"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="version" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="novel_id" type="BIGINT"/>
+            <column name="chunk_limit" type="INTEGER"><constraints nullable="false"/></column>
+            <column name="confirmed" type="BOOLEAN"><constraints nullable="false"/></column>
+            <column name="advice" type="${textType}"/>
+        </createTable>
+        <createIndex tableName="chunk_plan" indexName="uq_chunk_plan_novel" unique="true"><column name="novel_id"/></createIndex>
+        <createTable tableName="chunk_plan_segments">
+            <column name="chunk_plan_id" type="BIGINT"><constraints primaryKey="true" nullable="false" references="chunk_plan(id)" foreignKeyName="fk_segments_plan"/></column>
+            <column name="segment_order" type="INTEGER"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="segments" type="${textType}"/>
+        </createTable>
+        <createTable tableName="chunk">
+            <column name="id" type="${idType}" autoIncrement="true"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="version" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="novel_id" type="BIGINT"/>
+            <column name="position" type="INTEGER"><constraints nullable="false"/></column>
+            <column name="content" type="${textType}"/>
+        </createTable>
+        <createIndex tableName="chunk" indexName="uq_chunk_position" unique="true"><column name="novel_id"/><column name="position"/></createIndex>
+
+        <createTable tableName="panel_plan">
+            <column name="id" type="${idType}" autoIncrement="true"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="version" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="novel_id" type="BIGINT"/>
+            <column name="chunk_id" type="BIGINT"/>
+            <column name="confirmed" type="BOOLEAN"><constraints nullable="false"/></column>
+            <column name="panel_count" type="INTEGER"><constraints nullable="false"/></column>
+            <column name="provenance" type="VARCHAR(255)"/>
+        </createTable>
+        <createIndex tableName="panel_plan" indexName="uq_panel_plan_chunk" unique="true"><column name="chunk_id"/></createIndex>
+        <createTable tableName="panel_plan_descriptions">
+            <column name="panel_plan_id" type="BIGINT"><constraints primaryKey="true" nullable="false" references="panel_plan(id)" foreignKeyName="fk_descriptions_plan"/></column>
+            <column name="panel_order" type="INTEGER"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="descriptions" type="${textType}"/>
+        </createTable>
+        <createTable tableName="panel">
+            <column name="id" type="${idType}" autoIncrement="true"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="version" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="novel_id" type="BIGINT"/>
+            <column name="chunk_id" type="BIGINT"/>
+            <column name="chunk_position" type="INTEGER"><constraints nullable="false"/></column>
+            <column name="position" type="INTEGER"><constraints nullable="false"/></column>
+            <column name="description" type="${textType}"/>
+        </createTable>
+        <createIndex tableName="panel" indexName="uq_panel_position" unique="true"><column name="chunk_id"/><column name="position"/></createIndex>
+
+        <createTable tableName="studio_draft">
+            <column name="id" type="${idType}" autoIncrement="true"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="version" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="novel_id" type="BIGINT"/>
+            <column name="first_panel_id" type="BIGINT"/>
+            <column name="second_panel_id" type="BIGINT"/>
+            <column name="narrative_order" type="INTEGER"><constraints nullable="false"/></column>
+            <column name="prompt" type="${textType}"/>
+            <column name="character_context" type="${textType}"/>
+            <column name="provenance" type="VARCHAR(255)"/>
+        </createTable>
+        <createTable tableName="candidate">
+            <column name="id" type="${idType}" autoIncrement="true"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="version" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="novel_id" type="BIGINT"/>
+            <column name="draft_id" type="BIGINT"/>
+            <column name="first_panel_id" type="BIGINT"/>
+            <column name="second_panel_id" type="BIGINT"/>
+            <column name="narrative_order" type="INTEGER"><constraints nullable="false"/></column>
+            <column name="prompt" type="${textType}"/>
+            <column name="state" type="VARCHAR(255)"/>
+            <column name="image" type="${imageType}"/>
+            <column name="media_type" type="VARCHAR(255)"/>
+            <column name="provenance" type="VARCHAR(255)"/>
+        </createTable>
+        <createTable tableName="manga_entry">
+            <column name="id" type="${idType}" autoIncrement="true"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="version" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="novel_id" type="BIGINT"/>
+            <column name="candidate_id" type="BIGINT"/>
+            <column name="first_panel_id" type="BIGINT"/>
+            <column name="second_panel_id" type="BIGINT"/>
+            <column name="narrative_order" type="INTEGER"><constraints nullable="false"/></column>
+            <column name="filename" type="VARCHAR(255)"/>
+            <column name="media_type" type="VARCHAR(255)"/>
+            <column name="provenance" type="VARCHAR(255)"/>
+            <column name="caption" type="${textType}"/>
+        </createTable>
+        <createIndex tableName="manga_entry" indexName="uq_entry_candidate" unique="true"><column name="candidate_id"/></createIndex>
+        <createIndex tableName="manga_entry" indexName="idx_reader_order"><column name="novel_id"/><column name="narrative_order"/><column name="id"/></createIndex>
+    </changeSet>
+</databaseChangeLog>

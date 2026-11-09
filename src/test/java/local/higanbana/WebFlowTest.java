@@ -10,6 +10,7 @@ import org.springframework.mock.web.MockHttpSession;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import java.nio.file.Files;
@@ -22,6 +23,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest(properties = {"app.nvidia.api-key=test-key", "app.text.model=meta/llama-3.1-8b-instruct", "app.image.model="})
 @AutoConfigureMockMvc
+@ActiveProfiles("test")
 class WebFlowTest {
     @TempDir static Path storage;
     @DynamicPropertySource static void properties(DynamicPropertyRegistry registry) {
@@ -32,7 +34,22 @@ class WebFlowTest {
     @Autowired MockMvc mvc;
     @Autowired Workflow workflow;
     @Autowired org.springframework.core.env.Environment environment;
+        @Autowired javax.sql.DataSource dataSource;
+        @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
+        @Autowired liquibase.integration.spring.SpringLiquibase migrations;
     MockHttpSession session;
+
+        @Test void testsUseH2WithIdempotentLiquibaseMigrationsAndHibernateValidation() throws Exception {
+                try (var connection = dataSource.getConnection()) {
+                        assertThat(connection.getMetaData().getDatabaseProductName()).isEqualTo("H2");
+                }
+                assertThat(environment.getProperty("spring.jpa.hibernate.ddl-auto")).isEqualTo("validate");
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM DATABASECHANGELOG WHERE ID = ?", Integer.class,
+                                "001-initial-schema")).isEqualTo(1);
+                migrations.afterPropertiesSet();
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM DATABASECHANGELOG WHERE ID = ?", Integer.class,
+                                "001-initial-schema")).isEqualTo(1);
+        }
 
     @BeforeEach void session() throws Exception {
         session = (MockHttpSession) mvc.perform(get("/")).andExpect(status().isOk())
@@ -50,11 +67,21 @@ class WebFlowTest {
                 assertThat("test-key".equals(environment.getProperty("app.nvidia.api-key"))).isTrue();
         }
 
-    @Test void allSixScreensAndCompleteHttpWorkflow() throws Exception {
+        @Test void allScreensAndCompleteHttpWorkflowWithCharacters() throws Exception {
         mvc.perform(form("/novels").param("title", "El ultimo tren").param("source", "La viajera abre su cuaderno.\n".repeat(30)))
                 .andExpect(status().is3xxRedirection());
         long novelId = workflow.novels().getFirst().id;
         String base = "/novels/" + novelId;
+        mvc.perform(get(base + "/characters").session(session)).andExpect(status().isOk())
+                .andExpect(content().string(containsString("Todavia no hay personajes")));
+        mvc.perform(form(base + "/characters").param("name", "Aiko").param("description", "Ojos grises, abrigo rojo."))
+                .andExpect(status().is3xxRedirection());
+        long characterId = workflow.characters(novelId).getFirst().id;
+        mvc.perform(form(base + "/characters/" + characterId + "/save")
+                .param("name", "Aiko").param("description", "Ojos grises, abrigo blanco."))
+                .andExpect(status().is3xxRedirection());
+        mvc.perform(get(base + "/characters").session(session)).andExpect(status().isOk())
+                .andExpect(content().string(containsString("Ojos grises, abrigo blanco.")));
         mvc.perform(get(base + "/chunks").session(session)).andExpect(status().isOk());
         mvc.perform(form(base + "/chunks/propose").param("limit", "400").param("revision", "Pausas"))
                 .andExpect(status().is3xxRedirection());
@@ -73,7 +100,8 @@ class WebFlowTest {
         mvc.perform(get(base + "/panels").session(session)).andExpect(status().isOk());
         mvc.perform(get(base + "/studio").session(session)).andExpect(status().isOk());
         long panelId = workflow.panels(novelId).getFirst().id;
-        mvc.perform(form(base + "/studio").param("panelIds", Long.toString(panelId)).param("direction", "Luz lateral"))
+        mvc.perform(form(base + "/studio").param("panelIds", Long.toString(panelId)).param("direction", "Luz lateral")
+                .param("characterIds", Long.toString(characterId)))
                 .andExpect(status().is3xxRedirection());
         long draftId = workflow.drafts(novelId).getFirst().id;
         mvc.perform(get(base + "/studio").session(session)).andExpect(status().isOk())
@@ -82,6 +110,10 @@ class WebFlowTest {
                 .andExpect(status().is3xxRedirection());
         mvc.perform(form(base + "/studio/" + draftId + "/generate")).andExpect(status().is3xxRedirection());
         long candidateId = workflow.candidates(novelId).getFirst().id;
+        assertThat(workflow.candidate(novelId, candidateId).prompt).contains("Aiko", "Ojos grises, abrigo blanco.");
+        mvc.perform(form(base + "/characters/" + characterId + "/delete")).andExpect(status().is3xxRedirection());
+        assertThat(workflow.characters(novelId)).isEmpty();
+        assertThat(workflow.candidate(novelId, candidateId).prompt).contains("Ojos grises, abrigo blanco.");
         mvc.perform(get(base + "/generation").session(session)).andExpect(status().isOk())
                 .andExpect(content().string(containsString("Pendiente")));
         mvc.perform(get(base + "/candidates/" + candidateId + "/image").session(session))
@@ -120,6 +152,29 @@ class WebFlowTest {
         mvc.perform(multipart("/novels").file(file).session(session).param("title", "Invalid")
                 .param("_csrf", session.getAttribute("csrf").toString()))
                 .andExpect(status().isBadRequest()).andExpect(content().string(containsString("UTF-8 valido")));
+    }
+
+    @Test void characterFormsValidateOwnershipCsrfAndEscapeDescriptions() throws Exception {
+        var novel = workflow.createNovel("Reparto web", "Texto original.");
+        var other = workflow.createNovel("Otra novela", "Otro texto.");
+        String base = "/novels/" + novel.id;
+        mvc.perform(form(base + "/characters").param("name", " ").param("description", "Descripcion"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post(base + "/characters").session(session).param("name", "Aiko").param("description", "Descripcion"))
+                .andExpect(status().isForbidden());
+        mvc.perform(form(base + "/characters").param("name", "Aiko").param("description", "<script>alert(1)</script>"))
+                .andExpect(status().is3xxRedirection());
+        long characterId = workflow.characters(novel.id).getFirst().id;
+        mvc.perform(get(base + "/characters").session(session)).andExpect(status().isOk())
+                .andExpect(content().string(containsString("&lt;script&gt;alert(1)&lt;/script&gt;")));
+        mvc.perform(form("/novels/" + other.id + "/characters/" + characterId + "/save")
+                .param("name", "Ajeno").param("description", "Cambio"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(form("/novels/" + other.id + "/characters/" + characterId + "/delete"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post(base + "/characters/" + characterId + "/delete").session(session))
+                .andExpect(status().isForbidden());
+        assertThat(workflow.characters(novel.id)).hasSize(1);
     }
 
     @Test void acceptsUtf8FileAndBlocksCrossNovelHttpRequests() throws Exception {

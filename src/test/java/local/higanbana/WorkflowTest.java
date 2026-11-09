@@ -6,14 +6,16 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import static local.higanbana.Domain.*;
+import local.higanbana.domain.*;
 import static org.assertj.core.api.Assertions.*;
 
 @SpringBootTest(properties = "app.nvidia.api-key=test-key")
+@ActiveProfiles("test")
 @Transactional
 class WorkflowTest {
     @TempDir static Path storage;
@@ -22,6 +24,70 @@ class WorkflowTest {
         registry.add("app.text-mode", () -> "demo");
     }
     @Autowired Workflow workflow;
+    @Autowired jakarta.persistence.EntityManager em;
+
+    @Test void novelCharactersPersistThroughRelationshipAndOrphansAreRemoved() {
+        Novel novel = workflow.createNovel("Reparto", "Texto original.");
+        Novel other = workflow.createNovel("Otra obra", "Otro texto.");
+        NovelCharacter character = workflow.addCharacter(novel.id, " Aiko ", " Cabello corto, abrigo blanco. ");
+        Long novelId = novel.id;
+        Long characterId = character.id;
+        assertThat(character.novel).isSameAs(novel);
+        em.flush();
+        em.clear();
+        assertThat(workflow.novel(novelId).characters).extracting(item -> item.name).containsExactly("Aiko");
+        assertThat(workflow.characters(other.id)).isEmpty();
+        workflow.updateCharacter(novelId, characterId, "Aiko", "Cabello corto, abrigo negro.");
+        em.flush();
+        em.clear();
+        assertThat(workflow.characters(novelId).getFirst().description).contains("abrigo negro");
+        workflow.deleteCharacter(novelId, characterId);
+        em.flush();
+        em.clear();
+        assertThat(workflow.novel(novelId).characters).isEmpty();
+        assertThat(em.find(NovelCharacter.class, characterId)).isNull();
+    }
+
+    @Test void characterValidationAndOwnershipApplyToChangesAndStudio() {
+        Novel novel = prepared();
+        Novel other = workflow.createNovel("Otra obra", "Otro texto.");
+        NovelCharacter foreign = workflow.addCharacter(other.id, "Rin", "Ojos verdes.");
+        Long panelId = workflow.panels(novel.id).getFirst().id;
+        assertThatIllegalArgumentException().isThrownBy(() -> workflow.addCharacter(novel.id, " ", "Descripcion"));
+        assertThatIllegalArgumentException().isThrownBy(() -> workflow.addCharacter(novel.id, "Nombre", " "));
+        assertThatIllegalArgumentException().isThrownBy(() -> workflow.addCharacter(novel.id, "a".repeat(121), "Descripcion"));
+        assertThatIllegalArgumentException().isThrownBy(() -> workflow.addCharacter(novel.id, "Nombre", "a".repeat(2001)));
+        assertThatIllegalArgumentException().isThrownBy(() -> workflow.updateCharacter(novel.id, foreign.id, "Otro", "Descripcion"));
+        assertThatIllegalArgumentException().isThrownBy(() -> workflow.deleteCharacter(novel.id, foreign.id));
+        assertThatIllegalArgumentException().isThrownBy(() -> workflow.createDraft(novel.id, List.of(panelId), "", List.of(foreign.id)));
+        assertThat(workflow.characters(other.id).getFirst().name).isEqualTo("Rin");
+    }
+
+    @Test void studioUsesSelectedCharacterSnapshotsEvenAfterEditingOrDeletingCharacter() {
+        Novel novel = prepared();
+        NovelCharacter selected = workflow.addCharacter(novel.id, "Aiko", "Ojos grises y abrigo rojo.");
+        workflow.addCharacter(novel.id, "Rin", "Sombrero verde.");
+        Long panelId = workflow.panels(novel.id).getFirst().id;
+        StudioDraft draft = workflow.createDraft(novel.id, List.of(panelId), "", List.of(selected.id));
+        assertThat(draft.prompt).contains("Aiko", "Ojos grises y abrigo rojo.").doesNotContain("Sombrero verde");
+        workflow.saveDraft(novel.id, draft.id, "Primer plano al amanecer.");
+        workflow.updateCharacter(novel.id, selected.id, "Aiko", "Ahora lleva abrigo azul.");
+        workflow.deleteCharacter(novel.id, selected.id);
+        em.flush();
+        Candidate candidate = workflow.generate(novel.id, draft.id);
+        assertThat(candidate.prompt).contains("Primer plano al amanecer.", "Aiko", "Ojos grises y abrigo rojo.")
+                .doesNotContain("abrigo azul", "Sombrero verde");
+    }
+
+    @Test void selectedCharacterContextIsBoundedWithoutSilentTruncation() {
+        Novel novel = prepared();
+        NovelCharacter first = workflow.addCharacter(novel.id, "Aiko", "a".repeat(2000));
+        NovelCharacter second = workflow.addCharacter(novel.id, "Rin", "b".repeat(2000));
+        Long panelId = workflow.panels(novel.id).getFirst().id;
+        assertThatIllegalArgumentException().isThrownBy(() -> workflow.createDraft(novel.id,
+                List.of(panelId), "", List.of(first.id, second.id))).withMessageContaining("Selecciona menos personajes");
+        assertThat(workflow.drafts(novel.id)).isEmpty();
+    }
 
     private Novel prepared() {
         Novel novel = workflow.createNovel("La estacion", "Una viajera llega al anden. La ciudad espera.\n".repeat(15));

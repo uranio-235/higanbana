@@ -14,6 +14,7 @@
     <p class="project-name" th:text="${novel != null ? novel.title : 'Biblioteca'}"></p>
     <nav aria-label="Flujo de adaptacion">
       <a href="/" th:classappend="${view == 'novels'} ? 'active'"><span class="step">01</span> Novelas <i data-lucide="library" aria-hidden="true"></i></a>
+      <a th:if="${novel != null}" th:href="@{/novels/{id}/characters(id=${novel.id})}" th:classappend="${view == 'characters'} ? 'active'"><span class="step"><i data-lucide="users" aria-hidden="true"></i></span> Personajes</a>
       <th:block th:each="stage : ${ {'chunks','panels','studio','generation','reader'} }">
         <a th:if="${novel != null}" th:href="@{/novels/{id}/{stage}(id=${novel.id},stage=${stage})}" th:classappend="${view == stage} ? 'active'">
           <span class="step" th:text="${stage == 'chunks' ? '02' : stage == 'panels' ? '03' : stage == 'studio' ? '04' : stage == 'generation' ? '05' : '06'}"></span>
@@ -22,7 +23,7 @@
         <span th:unless="${novel != null}" class="disabled"><span class="step" th:text="${stage == 'chunks' ? '02' : stage == 'panels' ? '03' : stage == 'studio' ? '04' : stage == 'generation' ? '05' : '06'}"></span><span th:text="${stage == 'chunks' ? 'Chunks' : stage == 'panels' ? 'Paneles' : stage == 'studio' ? 'Estudio' : stage == 'generation' ? 'Generacion' : 'Lector'}"></span></span>
       </th:block>
     </nav>
-    <div class="storage-note"><i data-lucide="database" aria-hidden="true"></i><strong>Sesion temporal</strong><p>Los datos H2 se pierden al reiniciar. Solo las imagenes aprobadas permanecen en disco.</p></div>
+    <div class="storage-note"><i data-lucide="database" aria-hidden="true"></i><strong>Almacenamiento local</strong><p>Novelas y personajes en SQLite. Imagenes aprobadas en disco.</p></div>
   </aside>
   <main id="main">
     <div id="busy" class="htmx-indicator" role="status">Procesando solicitud...</div>
@@ -40,9 +41,32 @@
         </form>
         <aside class="library-preview"><img src="/demo.svg" alt="Ilustracion manga demo: viajera ante un paisaje montanoso"><p class="eyebrow">MESA DE TRABAJO</p><h2>Del manuscrito<br>a la secuencia.</h2><span class="tag">Ilustracion local / no IA</span></aside>
       </div>
-      <div class="section-heading"><h2>Obras de esta sesion</h2></div>
+      <div class="section-heading"><h2>Obras guardadas</h2></div>
       <p class="empty" th:if="${#lists.isEmpty(novels)}">Todavia no hay novelas.</p>
       <div class="novel-row" th:each="item : ${novels}"><div><h3 th:text="${item.title}"></h3><span class="muted" th:text="${#strings.length(item.source)} + ' caracteres'"></span></div><a class="button secondary" th:href="@{/novels/{id}/chunks(id=${item.id})}">Abrir <i data-lucide="arrow-right" aria-hidden="true"></i></a></div>
+    </section>
+
+    <section th:if="${view == 'characters'}">
+      <div class="page-heading"><div><p class="eyebrow">REPARTO / FICHAS VISUALES</p><h1>Personajes</h1></div><span class="tag" th:text="${#lists.size(characters)} + ' personajes'"></span></div>
+      <form th:action="@{/novels/{id}/characters(id=${novel.id})}" method="post" class="editor-form">
+        <input type="hidden" name="_csrf" th:value="${csrf}"><h2>Nuevo personaje</h2>
+        <label for="character-name">Nombre</label><input id="character-name" name="name" maxlength="120" required>
+        <label for="character-description">Descripcion visual</label><textarea id="character-description" name="description" rows="4" maxlength="2000" required placeholder="Rasgos, cabello, vestuario, expresiones..."></textarea>
+        <button><i data-lucide="user-plus" aria-hidden="true"></i> Crear personaje</button>
+      </form>
+      <div class="section-heading"><h2>Reparto de la novela</h2><a class="button secondary" th:href="@{/novels/{id}/studio(id=${novel.id})}">Abrir estudio <i data-lucide="arrow-right" aria-hidden="true"></i></a></div>
+      <p class="empty" th:if="${#lists.isEmpty(characters)}">Todavia no hay personajes.</p>
+      <article class="draft-row" th:each="character : ${characters}">
+        <div class="section-heading"><h3 th:text="${character.name}"></h3>
+          <form th:action="@{/novels/{id}/characters/{character}/delete(id=${novel.id},character=${character.id})}" method="post" hx-confirm="Eliminar este personaje? Las descripciones ya preparadas se conservaran."><input type="hidden" name="_csrf" th:value="${csrf}"><button class="secondary icon-button" title="Eliminar personaje" aria-label="Eliminar personaje"><i data-lucide="trash-2" aria-hidden="true"></i></button></form>
+        </div>
+        <form th:action="@{/novels/{id}/characters/{character}/save(id=${novel.id},character=${character.id})}" method="post" class="editor-form">
+          <input type="hidden" name="_csrf" th:value="${csrf}">
+          <label th:for="'name-' + ${character.id}">Nombre</label><input th:id="'name-' + ${character.id}" name="name" maxlength="120" required th:value="${character.name}">
+          <label th:for="'description-' + ${character.id}">Descripcion visual</label><textarea th:id="'description-' + ${character.id}" name="description" rows="4" maxlength="2000" required th:text="${character.description}"></textarea>
+          <button class="secondary"><i data-lucide="save" aria-hidden="true"></i> Guardar personaje</button>
+        </form>
+      </article>
     </section>
 
     <section th:if="${view == 'chunks'}">
@@ -88,11 +112,14 @@
       <p class="empty" th:if="${#lists.isEmpty(panels)}">No hay paneles confirmados. <a th:href="@{/novels/{id}/panels(id=${novel.id})}">Abrir paneles</a></p>
       <form th:unless="${#lists.isEmpty(panels)}" th:action="@{/novels/{id}/studio(id=${novel.id})}" method="post" class="editor-form" data-panel-selection>
         <input type="hidden" name="_csrf" th:value="${csrf}"><fieldset><legend>Seleccion narrativa</legend><label class="selection-row" th:each="panel : ${panels}"><input type="checkbox" name="panelIds" th:value="${panel.id}"><span><strong th:text="'Chunk ' + ${panel.chunkPosition} + ' / Panel ' + ${panel.position}"></strong><span th:text="${panel.description}"></span></span></label></fieldset>
-        <p class="selection-count muted" aria-live="polite">0 / 2 seleccionados</p><label for="direction">Direccion visual</label><textarea id="direction" name="direction" rows="2" maxlength="1500" placeholder="Composicion, expresiones, luz..."></textarea>
+        <p class="selection-count muted" aria-live="polite">0 / 2 seleccionados</p>
+        <fieldset th:unless="${#lists.isEmpty(characters)}"><legend>Personajes en escena</legend><label class="selection-row" th:each="character : ${characters}"><input type="checkbox" name="characterIds" th:value="${character.id}"><span><strong th:text="${character.name}"></strong><span th:text="${character.description}"></span></span></label></fieldset>
+        <label for="direction">Direccion visual</label><textarea id="direction" name="direction" rows="2" maxlength="1500" placeholder="Composicion, expresiones, luz..."></textarea>
         <button data-selection-submit><i data-lucide="pencil-line" aria-hidden="true"></i> Crear descripcion</button>
       </form>
       <div class="section-heading"><h2>Descripciones guardadas</h2></div><p th:if="${#lists.isEmpty(drafts)}" class="empty">Ninguna descripcion todavia.</p>
       <article class="draft-row" th:each="draft : ${drafts}"><div class="section-heading"><h3 th:text="'Descripcion #' + ${draft.id}"></h3><span class="tag" th:text="${draft.provenance}"></span></div>
+        <details th:if="${!#strings.isEmpty(draft.characterContext)}"><summary>Fichas de personajes guardadas</summary><pre class="source-text" th:text="${draft.characterContext}"></pre></details>
         <form th:action="@{/novels/{id}/studio/{draft}/save(id=${novel.id},draft=${draft.id})}" method="post"><input type="hidden" name="_csrf" th:value="${csrf}"><label th:for="'prompt-' + ${draft.id}">Descripcion editable</label><textarea th:id="'prompt-' + ${draft.id}" name="prompt" rows="5" maxlength="6000" required th:text="${draft.prompt}"></textarea><button class="secondary"><i data-lucide="save" aria-hidden="true"></i> Guardar descripcion</button></form>
         <form th:action="@{/novels/{id}/studio/{draft}/generate(id=${novel.id},draft=${draft.id})}" method="post" class="action-bar"><input type="hidden" name="_csrf" th:value="${csrf}"><button><i data-lucide="image-plus" aria-hidden="true"></i> Generar candidato demo guardado</button></form>
       </article>
@@ -116,7 +143,7 @@
       <p class="empty" th:if="${#lists.isEmpty(entries)}">Todavia no hay imagenes aprobadas. <a th:href="@{/novels/{id}/generation(id=${novel.id})}">Revisar candidatos</a></p>
       <div class="reader"><figure th:each="entry,stat : ${entries}"><img th:src="@{/novels/{id}/entries/{entry}/image(id=${novel.id},entry=${entry.id})}" th:alt="${entry.caption}"><figcaption><span th:text="'Secuencia ' + ${stat.count}"></span><span th:text="${entry.provenance}"></span><a th:href="@{/novels/{id}/entries/{entry}/image(id=${novel.id},entry=${entry.id})}" th:download="${entry.filename}" title="Descargar imagen" aria-label="Descargar imagen" hx-boost="false"><i data-lucide="download" aria-hidden="true"></i></a></figcaption></figure></div>
     </section>
-    <footer>Higanbana <span>LOCAL / H2 EN MEMORIA / SIN CLOUD</span></footer>
+    <footer>Higanbana <span>LOCAL / SQLITE</span></footer>
   </main>
 </div>
 </body>

@@ -20,6 +20,19 @@
 - Multi-component records remain appropriate for actual composite data. Do not
   replace them with Optional, which expresses presence/absence, not aggregation.
 
+## Real Implementations
+
+- Implement real application behavior going forward; do not add new demo modes.
+- As each functionality receives a real implementation, remove its demo path,
+  demo configuration switches, simulated results, and obsolete demo UI in the
+  same change. Do not retain a parallel demo implementation for that functionality.
+- Never fall back to simulated output when configuration, credentials, or a real
+  provider fails. Report the failure explicitly; do not present it as success.
+- If a functionality is not implemented yet, show an unavailable state rather
+  than fabricated output. Remove existing demo behavior as that area is migrated.
+- Mocks, stubs, and fixtures are allowed in tests only, not as selectable runtime
+  providers or substitutes for real end-to-end verification.
+
 ## Verification
 
 - Run focused tests for changed behavior. Stop any process using the packaged JAR

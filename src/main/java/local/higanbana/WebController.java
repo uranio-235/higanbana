@@ -55,19 +55,22 @@ public class WebController {
             }
         }
         var novel = workflow.createNovel(input.title(), source);
-        flash.addFlashAttribute("notice", "Novela guardada en esta sesion.");
+        flash.addFlashAttribute("notice", "Novela guardada.");
         return redirect(novel.id, "chunks");
     }
 
     @GetMapping("/novels/{novelId}/{view}") public String page(@PathVariable long novelId, @PathVariable String view,
                          @RequestParam(required = false) Long chunkId, Model model) {
-        if (!List.of("chunks", "panels", "studio", "generation", "reader").contains(view)) {
+        if (!List.of("characters", "chunks", "panels", "studio", "generation", "reader").contains(view)) {
             throw new IllegalArgumentException("Vista no encontrada.");
         }
         model.addAttribute("novel", workflow.novel(novelId));
         model.addAttribute("view", view);
         var chunks = workflow.chunks(novelId);
         model.addAttribute("chunks", chunks);
+        if (view.equals("characters") || view.equals("studio")) {
+            model.addAttribute("characters", workflow.characters(novelId));
+        }
         if (view.equals("chunks")) { model.addAttribute("plan", workflow.chunkPlan(novelId)); }
         if (view.equals("panels") && !chunks.isEmpty()) {
             var chunk = workflow.chunk(novelId, chunkId == null ? chunks.getFirst().id : chunkId);
@@ -84,6 +87,24 @@ public class WebController {
         }
         if (view.equals("reader")) { model.addAttribute("entries", workflow.reader(novelId)); }
         return "workspace";
+    }
+
+    @PostMapping("/novels/{novelId}/characters") public String addCharacter(@PathVariable long novelId,
+                    @Valid @ModelAttribute CharacterInput input) {
+        workflow.addCharacter(novelId, input.name(), input.description());
+        return redirect(novelId, "characters");
+    }
+
+    @PostMapping("/novels/{novelId}/characters/{characterId}/save") public String saveCharacter(@PathVariable long novelId,
+                    @PathVariable long characterId, @Valid @ModelAttribute CharacterInput input) {
+        workflow.updateCharacter(novelId, characterId, input.name(), input.description());
+        return redirect(novelId, "characters");
+    }
+
+    @PostMapping("/novels/{novelId}/characters/{characterId}/delete") public String deleteCharacter(@PathVariable long novelId,
+                    @PathVariable long characterId) {
+        workflow.deleteCharacter(novelId, characterId);
+        return redirect(novelId, "characters");
     }
 
     @PostMapping("/novels/{novelId}/chunks/propose") public String proposeChunks(@PathVariable long novelId,
@@ -116,8 +137,9 @@ public class WebController {
     }
 
     @PostMapping("/novels/{novelId}/studio") public String studio(@PathVariable long novelId,
-                  @RequestParam(required = false) List<Long> panelIds, @RequestParam(defaultValue = "") String direction) {
-        workflow.createDraft(novelId, panelIds, direction);
+                  @RequestParam(required = false) List<Long> panelIds, @RequestParam(defaultValue = "") String direction,
+                  @RequestParam(required = false) List<Long> characterIds) {
+        workflow.createDraft(novelId, panelIds, direction, characterIds);
         return redirect(novelId, "studio");
     }
 
@@ -166,11 +188,12 @@ public class WebController {
     private String redirect(long novelId, String view) { return "redirect:/novels/" + novelId + "/" + view; }
 
     public record NovelInput(@NotBlank @Size(max = 160) String title, @Size(max = 1_000_000) String source) {}
+    public record CharacterInput(@NotBlank @Size(max = 120) String name, @NotBlank @Size(max = 2000) String description) {}
 
     @ExceptionHandler({IllegalArgumentException.class, BindException.class, MaxUploadSizeExceededException.class})
     @ResponseStatus(org.springframework.http.HttpStatus.BAD_REQUEST)
     public String invalid(Exception exception, Model model) {
-        String message = exception instanceof BindException ? "Revisa el titulo y la longitud del texto."
+        String message = exception instanceof BindException ? "Revisa los campos obligatorios y sus longitudes."
                 : exception instanceof MaxUploadSizeExceededException ? "El archivo supera el limite de 2 MB."
                 : exception.getMessage();
         model.addAttribute("message", message);

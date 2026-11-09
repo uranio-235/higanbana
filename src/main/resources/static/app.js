@@ -1,7 +1,7 @@
 function initialize() {
     if (window.lucide) window.lucide.createIcons();
     document.querySelectorAll('[data-panel-selection]').forEach(form => {
-        const checkboxes = [...form.querySelectorAll('input[type="checkbox"]')];
+        const checkboxes = [...form.querySelectorAll('input[name="panelIds"]')];
         const update = () => {
             const count = checkboxes.filter(input => input.checked).length;
             form.querySelector('.selection-count').textContent = `${count} / 2 seleccionados`;

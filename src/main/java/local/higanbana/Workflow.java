@@ -15,7 +15,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
-import static local.higanbana.Domain.*;
+import local.higanbana.domain.*;
 
 @Service
 @Transactional
@@ -58,6 +58,44 @@ public class Workflow {
         if (plans.isEmpty()) { return null; }
         plans.getFirst().segments.size();
         return plans.getFirst();
+    }
+
+    public List<NovelCharacter> characters(long novelId) {
+        novel(novelId);
+        return em.createQuery("from NovelCharacter where novel.id=:novel order by id", NovelCharacter.class)
+                .setParameter("novel", novelId).getResultList();
+    }
+
+    public NovelCharacter addCharacter(long novelId, String name, String description) {
+        Novel novel = lockNovel(novelId);
+        validText(name, 120, "Nombre del personaje");
+        validText(description, 2000, "Descripcion del personaje");
+        NovelCharacter character = new NovelCharacter();
+        character.name = name.strip();
+        character.description = description.strip();
+        novel.addCharacter(character);
+        em.persist(character);
+        return character;
+    }
+
+    public void updateCharacter(long novelId, long characterId, String name, String description) {
+        lockNovel(novelId);
+        validText(name, 120, "Nombre del personaje");
+        validText(description, 2000, "Descripcion del personaje");
+        NovelCharacter character = character(novelId, characterId);
+        character.name = name.strip();
+        character.description = description.strip();
+    }
+
+    public void deleteCharacter(long novelId, long characterId) {
+        Novel novel = lockNovel(novelId);
+        novel.removeCharacter(character(novelId, characterId));
+    }
+
+    private NovelCharacter character(long novelId, long characterId) {
+        return em.createQuery("from NovelCharacter where id=:id and novel.id=:novel", NovelCharacter.class)
+                .setParameter("id", characterId).setParameter("novel", novelId).getResultStream().findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("El personaje no pertenece a esta novela."));
     }
 
     public List<Chunk> chunks(long novelId) {
@@ -175,6 +213,10 @@ public class Workflow {
     }
 
     public StudioDraft createDraft(long novelId, List<Long> panelIds, String direction) {
+        return createDraft(novelId, panelIds, direction, List.of());
+    }
+
+    public StudioDraft createDraft(long novelId, List<Long> panelIds, String direction, List<Long> characterIds) {
         lockNovel(novelId);
         revision(direction);
         if (panelIds == null || panelIds.isEmpty() || panelIds.size() > 2 || panelIds.stream().distinct().count() != panelIds.size()) {
@@ -188,7 +230,17 @@ public class Workflow {
             selected.add(panel);
         }
         selected.sort(Comparator.comparingInt((Panel panel) -> panel.chunkPosition).thenComparingInt(panel -> panel.position));
-        String context = String.join("\n", selected.stream().map(panel -> panel.description).toList());
+        List<Long> castIds = characterIds == null ? List.of() : characterIds;
+        if (castIds.stream().anyMatch(Objects::isNull) || castIds.stream().distinct().count() != castIds.size()) {
+            fail("Selecciona personajes distintos de esta novela.");
+        }
+        List<String> characterDescriptions = castIds.stream().sorted()
+            .map(characterId -> character(novelId, characterId))
+            .map(character -> character.name + ": " + character.description).toList();
+        String characterContext = characterDescriptions.isEmpty() ? "" : "Personajes:\n" + String.join("\n", characterDescriptions);
+        if (characterContext.length() > 3000) { fail("Las fichas seleccionadas superan 3000 caracteres. Selecciona menos personajes."); }
+        String context = characterContext + "\n" + String.join("\n", selected.stream().map(panel -> panel.description).toList());
+        validText(context, 8000, "Contexto de paneles y personajes; reduce la seleccion");
         String prompt = text.describe(context, direction);
         validText(prompt, 6000, "Descripcion");
         StudioDraft draft = new StudioDraft();
@@ -197,6 +249,7 @@ public class Workflow {
         draft.secondPanelId = selected.size() == 2 ? selected.get(1).id : null;
         draft.narrativeOrder = selected.getFirst().chunkPosition * 100 + selected.getFirst().position;
         draft.prompt = prompt;
+        draft.characterContext = characterContext;
         draft.provenance = text.provenance();
         em.persist(draft);
         return draft;
@@ -221,7 +274,9 @@ public class Workflow {
         StudioDraft draft = required(StudioDraft.class, draftId);
         owned(draft.novelId, novelId);
         validText(draft.prompt, 6000, "Descripcion guardada");
-        ImageProvider.ImageResult image = images.generate(draft.prompt);
+        String imagePrompt = draft.prompt + (draft.characterContext.isEmpty() ? "" : "\n\n" + draft.characterContext);
+        validText(imagePrompt, 10000, "Descripcion y fichas de personajes");
+        ImageProvider.ImageResult image = images.generate(imagePrompt);
         if (image.bytes() == null || image.bytes().length == 0 || image.bytes().length > 5_000_000
                 || !List.of("image/svg+xml", "image/png", "image/jpeg").contains(image.mediaType())) {
             fail("El proveedor devolvio una imagen no valida.");
@@ -232,7 +287,7 @@ public class Workflow {
         candidate.firstPanelId = draft.firstPanelId;
         candidate.secondPanelId = draft.secondPanelId;
         candidate.narrativeOrder = draft.narrativeOrder;
-        candidate.prompt = draft.prompt;
+        candidate.prompt = imagePrompt;
         candidate.image = image.bytes();
         candidate.mediaType = image.mediaType();
         candidate.provenance = image.provenance();
