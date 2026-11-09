@@ -1,0 +1,13 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "java",
+            "name": "Higanbana (Spring Boot)",
+            "request": "launch",
+            "mainClass": "local.higanbana.HiganbanaApplication",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        }
+    ]
+}
