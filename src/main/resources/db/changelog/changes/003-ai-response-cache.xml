@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
+    <changeSet id="003-ai-response-cache" author="higanbana" dbms="h2">
+        <createTable tableName="ai_response_cache">
+            <column name="cache_key" type="VARCHAR(64)"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="operation" type="VARCHAR(80)"><constraints nullable="false"/></column>
+            <column name="provider" type="VARCHAR(255)"><constraints nullable="false"/></column>
+            <column name="model" type="VARCHAR(255)"><constraints nullable="false"/></column>
+            <column name="prompt_version" type="VARCHAR(80)"><constraints nullable="false"/></column>
+            <column name="response" type="CLOB"><constraints nullable="false"/></column>
+            <column name="created_at" type="TIMESTAMP" defaultValueComputed="CURRENT_TIMESTAMP"><constraints nullable="false"/></column>
+            <column name="expires_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+        </createTable>
+        <createIndex tableName="ai_response_cache" indexName="idx_ai_response_cache_expiry">
+            <column name="expires_at"/>
+        </createIndex>
+    </changeSet>
+</databaseChangeLog>

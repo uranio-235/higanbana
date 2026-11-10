@@ -2,7 +2,6 @@
 <databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
-    <property name="idType" value="INTEGER" dbms="sqlite"/>
     <property name="idType" value="BIGINT"/>
     <property name="imageType" value="VARBINARY(5000000)" dbms="h2"/>
     <property name="imageType" value="BLOB"/>

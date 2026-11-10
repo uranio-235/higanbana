@@ -1,4 +1,4 @@
-package local.higanbana;
+package local.higanbana.config;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -9,15 +9,18 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.servlet.HandlerInterceptor;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+import java.time.Duration;
 import java.util.UUID;
 
 @Configuration
 public class WebConfiguration implements WebMvcConfigurer {
-    @Bean RestClientCustomizer providerTimeouts() {
+    @Bean RestClientCustomizer providerTimeouts(
+            @org.springframework.beans.factory.annotation.Value("${app.nvidia.connect-timeout:10s}") Duration connectTimeout,
+            @org.springframework.beans.factory.annotation.Value("${app.nvidia.read-timeout:180s}") Duration readTimeout) {
         return builder -> {
             var factory = new SimpleClientHttpRequestFactory();
-            factory.setConnectTimeout(10000);
-            factory.setReadTimeout(60000);
+            factory.setConnectTimeout(connectTimeout);
+            factory.setReadTimeout(readTimeout);
             builder.requestFactory(factory);
         };
     }

@@ -1,4 +1,4 @@
-package local.higanbana;
+package local.higanbana.infrastructure.image;
 
 import org.springframework.stereotype.Component;
 import java.nio.charset.StandardCharsets;

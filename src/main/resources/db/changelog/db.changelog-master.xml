@@ -3,4 +3,6 @@
                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
     <include file="changes/001-initial-schema.xml" relativeToChangelogFile="true"/>
+    <include file="changes/002-row-id-sequence.xml" relativeToChangelogFile="true"/>
+    <include file="changes/003-ai-response-cache.xml" relativeToChangelogFile="true"/>
 </databaseChangeLog>

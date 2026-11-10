@@ -8,6 +8,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.ActiveProfiles;
@@ -20,6 +21,12 @@ import static org.assertj.core.api.Assertions.*;
 import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.*;
+import local.higanbana.domain.Chunking;
+import local.higanbana.application.Workflow;
+import local.higanbana.infrastructure.ai.TextAssistant;
+import local.higanbana.infrastructure.ai.JdbcAiResponseCache;
 
 @SpringBootTest(properties = {"app.nvidia.api-key=test-key", "app.text.model=meta/llama-3.1-8b-instruct", "app.image.model="})
 @AutoConfigureMockMvc
@@ -33,10 +40,12 @@ class WebFlowTest {
     }
     @Autowired MockMvc mvc;
     @Autowired Workflow workflow;
+        @MockitoSpyBean TextAssistant text;
     @Autowired org.springframework.core.env.Environment environment;
         @Autowired javax.sql.DataSource dataSource;
         @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
         @Autowired liquibase.integration.spring.SpringLiquibase migrations;
+        @Autowired JdbcAiResponseCache aiResponseCache;
     MockHttpSession session;
 
         @Test void testsUseH2WithIdempotentLiquibaseMigrationsAndHibernateValidation() throws Exception {
@@ -52,6 +61,8 @@ class WebFlowTest {
         }
 
     @BeforeEach void session() throws Exception {
+        doAnswer(invocation -> Chunking.split(invocation.getArgument(0), invocation.getArgument(1)))
+                .when(text).chunks(anyString(), anyInt(), anyString());
         session = (MockHttpSession) mvc.perform(get("/")).andExpect(status().isOk())
                 .andExpect(content().string(containsString("Nueva obra"))).andReturn().getRequest().getSession();
     }
@@ -82,8 +93,10 @@ class WebFlowTest {
                 .andExpect(status().is3xxRedirection());
         mvc.perform(get(base + "/characters").session(session)).andExpect(status().isOk())
                 .andExpect(content().string(containsString("Ojos grises, abrigo blanco.")));
-        mvc.perform(get(base + "/chunks").session(session)).andExpect(status().isOk());
-        mvc.perform(form(base + "/chunks/propose").param("limit", "400").param("revision", "Pausas"))
+        mvc.perform(get(base + "/chunks").session(session)).andExpect(status().isOk())
+                .andExpect(content().string(containsString("Criterio narrativo")))
+                .andExpect(content().string(org.hamcrest.Matchers.not(containsString("name=\"limit\""))));
+        mvc.perform(form(base + "/chunks/propose").param("revision", "Pausas"))
                 .andExpect(status().is3xxRedirection());
         mvc.perform(get(base + "/chunks").session(session)).andExpect(status().isOk())
                 .andExpect(content().string(containsString("texto integro")));
@@ -142,6 +155,13 @@ class WebFlowTest {
         mvc.perform(get(base + "/generation").session(session)).andExpect(status().isOk())
                 .andExpect(content().string(containsString("Rechazado")));
     }
+
+        @Test void aiResponseCacheTableAndJdbcRepositoryWorkInH2Tests() {
+                String key = "c".repeat(64);
+                aiResponseCache.store(key, "describe-v1", "https://provider.test", "test-model", "prompt-v1",
+                        "Respuesta de prueba.", java.time.Duration.ofDays(1));
+                assertThat(aiResponseCache.find(key)).contains("Respuesta de prueba.");
+        }
 
     @Test void rejectsMissingCsrfAndInvalidUtf8() throws Exception {
         mvc.perform(get("/").session(session)).andExpect(status().isOk())

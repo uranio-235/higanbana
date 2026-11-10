@@ -4,7 +4,5 @@
 *.log
 .env
 /application-local.properties
-/higanbana.db
-/higanbana.db-wal
-/higanbana.db-shm
-/higanbana.db-journal
+/higanbana.duckdb
+/higanbana.duckdb.wal

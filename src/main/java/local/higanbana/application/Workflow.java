@@ -1,7 +1,6 @@
-package local.higanbana;
+package local.higanbana.application;
 
 import jakarta.persistence.EntityManager;
-import jakarta.persistence.LockModeType;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -15,6 +14,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import local.higanbana.infrastructure.ai.TextAssistant;
+import local.higanbana.infrastructure.image.ImageProvider;
 import local.higanbana.domain.*;
 
 @Service
@@ -24,16 +25,24 @@ public class Workflow {
     private final TextAssistant text;
     private final ImageProvider images;
     private final Path mangaDirectory;
+    private final int analysisWindow;
 
     public Workflow(EntityManager em, TextAssistant text, ImageProvider images,
-                    @Value("${app.manga-dir}") String mangaDirectory) {
+                    @Value("${app.manga-dir}") String mangaDirectory,
+                    @Value("${app.chunks.analysis-window-chars:5000}") int analysisWindow) {
         this.em = em;
         this.text = text;
         this.images = images;
         this.mangaDirectory = Path.of(mangaDirectory).toAbsolutePath().normalize();
+        if (analysisWindow < 200 || analysisWindow > 5000) {
+            throw new IllegalArgumentException("app.chunks.analysis-window-chars debe estar entre 200 y 5000.");
+        }
+        this.analysisWindow = analysisWindow;
     }
 
     public String textProvenance() { return text.provenance(); }
+    public String chunkProvenance() { return text.chunkProvenance(); }
+    public boolean chunkingAvailable() { return text.chunkingAvailable(); }
 
     public List<Novel> novels() {
         return em.createQuery("from Novel order by id desc", Novel.class).getResultList();
@@ -67,7 +76,7 @@ public class Workflow {
     }
 
     public NovelCharacter addCharacter(long novelId, String name, String description) {
-        Novel novel = lockNovel(novelId);
+        Novel novel = mutableNovel(novelId);
         validText(name, 120, "Nombre del personaje");
         validText(description, 2000, "Descripcion del personaje");
         NovelCharacter character = new NovelCharacter();
@@ -79,7 +88,7 @@ public class Workflow {
     }
 
     public void updateCharacter(long novelId, long characterId, String name, String description) {
-        lockNovel(novelId);
+        mutableNovel(novelId);
         validText(name, 120, "Nombre del personaje");
         validText(description, 2000, "Descripcion del personaje");
         NovelCharacter character = character(novelId, characterId);
@@ -88,7 +97,7 @@ public class Workflow {
     }
 
     public void deleteCharacter(long novelId, long characterId) {
-        Novel novel = lockNovel(novelId);
+        Novel novel = mutableNovel(novelId);
         novel.removeCharacter(character(novelId, characterId));
     }
 
@@ -110,15 +119,19 @@ public class Workflow {
         return chunk;
     }
 
+    public ChunkPlan proposeChunks(long novelId, String revision) {
+        return proposeChunks(novelId, analysisWindow, revision);
+    }
+
     public ChunkPlan proposeChunks(long novelId, int limit, String revision) {
-        Novel novel = lockNovel(novelId);
+        Novel novel = mutableNovel(novelId);
         if (limit < 200 || limit > 8000) { fail("El limite debe estar entre 200 y 8000 caracteres."); }
         revision(revision);
         ChunkPlan plan = chunkPlan(novelId);
         if (plan != null && plan.confirmed) { fail("Los chunks ya estan confirmados. No se modifica trabajo posterior."); }
+        if (!text.chunkingAvailable()) { fail("La segmentacion narrativa no esta disponible. Configura NVIDIA y su modelo de texto."); }
         List<String> segments = text.chunks(novel.source, limit, revision);
-        String advice = text.provenance() + ": propuesta sobre el texto completo, procesado por porciones. "
-            + "Revisa los cortes antes de confirmar. Direccion: " + revision;
+        String advice = text.chunkProvenance() + ": escenas segun cambios de lugar, tiempo y accion. Direccion: " + revision;
         if (plan == null) {
             plan = new ChunkPlan();
             plan.novelId = novelId;
@@ -132,7 +145,7 @@ public class Workflow {
     }
 
     public void confirmChunks(long novelId) {
-        lockNovel(novelId);
+        mutableNovel(novelId);
         ChunkPlan plan = chunkPlan(novelId);
         if (plan == null) { fail("Primero solicita una propuesta de chunks."); }
         if (plan.confirmed) { return; }
@@ -157,7 +170,7 @@ public class Workflow {
     }
 
     public PanelPlan proposePanels(long novelId, long chunkId, int count, String revision) {
-        lockNovel(novelId);
+        mutableNovel(novelId);
         Chunk chunk = chunk(novelId, chunkId);
         if (count < 1 || count > 12) { fail("Elige de 1 a 12 paneles."); }
         revision(revision);
@@ -179,7 +192,7 @@ public class Workflow {
     }
 
     public void savePanels(long novelId, long chunkId, List<String> descriptions) {
-        lockNovel(novelId);
+        mutableNovel(novelId);
         PanelPlan plan = panelPlan(novelId, chunkId);
         if (plan == null || plan.confirmed) { fail("No hay una propuesta editable."); }
         validateDescriptions(descriptions, plan.panelCount);
@@ -188,7 +201,7 @@ public class Workflow {
     }
 
     public void confirmPanels(long novelId, long chunkId) {
-        lockNovel(novelId);
+        mutableNovel(novelId);
         Chunk chunk = chunk(novelId, chunkId);
         PanelPlan plan = panelPlan(novelId, chunkId);
         if (plan == null) { fail("Primero solicita una propuesta de paneles."); }
@@ -217,7 +230,7 @@ public class Workflow {
     }
 
     public StudioDraft createDraft(long novelId, List<Long> panelIds, String direction, List<Long> characterIds) {
-        lockNovel(novelId);
+        mutableNovel(novelId);
         revision(direction);
         if (panelIds == null || panelIds.isEmpty() || panelIds.size() > 2 || panelIds.stream().distinct().count() != panelIds.size()) {
             fail("Selecciona exactamente uno o dos paneles distintos de la misma novela.");
@@ -262,7 +275,7 @@ public class Workflow {
     }
 
     public void saveDraft(long novelId, long draftId, String prompt) {
-        lockNovel(novelId);
+        mutableNovel(novelId);
         StudioDraft draft = required(StudioDraft.class, draftId);
         owned(draft.novelId, novelId);
         validText(prompt, 6000, "Descripcion");
@@ -270,7 +283,7 @@ public class Workflow {
     }
 
     public Candidate generate(long novelId, long draftId) {
-        lockNovel(novelId);
+        mutableNovel(novelId);
         StudioDraft draft = required(StudioDraft.class, draftId);
         owned(draft.novelId, novelId);
         validText(draft.prompt, 6000, "Descripcion guardada");
@@ -308,7 +321,7 @@ public class Workflow {
     }
 
     public void reject(long novelId, long candidateId) {
-        lockNovel(novelId);
+        mutableNovel(novelId);
         Candidate candidate = candidate(novelId, candidateId);
         if (candidate.state == ReviewState.REJECTED) { return; }
         if (candidate.state != ReviewState.PENDING) { fail("Una imagen aprobada no se puede rechazar."); }
@@ -317,7 +330,7 @@ public class Workflow {
     }
 
     public MangaEntry approve(long novelId, long candidateId) {
-        lockNovel(novelId);
+        mutableNovel(novelId);
         Candidate candidate = candidate(novelId, candidateId);
         if (candidate.state == ReviewState.APPROVED) {
             return reader(novelId).stream().filter(entry -> entry.candidateId == candidateId).findFirst().orElseThrow();
@@ -391,10 +404,8 @@ public class Workflow {
         return Objects.equals(entry.firstPanelId, panelId) || Objects.equals(entry.secondPanelId, panelId);
     }
 
-    private Novel lockNovel(long novelId) {
-        Novel novel = novel(novelId);
-        em.lock(novel, LockModeType.PESSIMISTIC_WRITE);
-        return novel;
+    private Novel mutableNovel(long novelId) {
+        return novel(novelId);
     }
 
     private <T> T required(Class<T> type, long id) {

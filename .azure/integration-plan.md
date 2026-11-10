@@ -15,21 +15,30 @@
 - Mock/live switch: property `app.text-mode=demo|nvidia`; `TextAssistant.java` owns text
   selection. No mock client files/datasets to delete and no TypeScript/shared npm
   package. Java workflow types: individual files in `local.higanbana.domain`;
-  boundaries validated in `Workflow`.
+  boundaries validated in `application/Workflow`.
+- Java layout: `domain` contains entities and lossless chunk splitting;
+  `application/Workflow` owns transactional orchestration; `infrastructure/ai`
+  and `infrastructure/image` contain provider integrations; `web/controller`
+  separates workspace, characters, chunks, panels, studio, generation, and image
+  routes; `web/dto` and `web/error` hold MVC contracts/handling; `config` contains
+  cross-cutting web configuration. Public route paths are unchanged.
 - Novel characters use a bidirectional OneToMany/ManyToOne foreign-key relation.
   The studio stores selected sheet snapshots and passes them to text/image prompts.
 - Image boundary: `ImageProvider.java`; replace `DemoImageProvider` only after a
   real provider is selected/verified. NVIDIA text never enables real images.
-- Database: persistent SQLite (`./higanbana.db`), Liquibase migrations and Hibernate
-  schema validation. H2 is test-only via the test profile; no seed data.
-- Changelog: `src/main/resources/db/changelog/db.changelog-master.xml` includes
-  `changes/001-initial-schema.xml`. Do not modify applied changesets.
+- Database: persistent DuckDB (`./higanbana.duckdb`), DuckDB JDBC 2.0.0.1 and
+  `db/duckdb/schema.sql`; Hibernate uses PostgreSQL-compatible SQL with automatic
+  DDL disabled. H2/Liquibase remain test-only via the test profile.
+- AI response cache uses `ai_response_cache` in DuckDB, keyed by SHA-256 of the
+  operation/provider/model/prompt version/generation settings and exact final
+  request. Only validated successful output is stored; default TTL is 30 days.
+  Prompt/source content is not duplicated into the cache table.
 - Storage: approved files only under `app.manga-dir` (default `./data/manga`). Pending
-  bytes in SQLite; rejected bytes removed. Image associations survive restart.
-  Back up SQLite and the image directory together.
-- SQLite uses foreign keys, WAL, busy timeout 10 s and a one-connection JDBC pool.
-  No row-level FOR UPDATE support; pool serialization is local-instance only.
-- Services: Essential = local MVC, JPA/SQLite, local approved-image storage;
+  bytes in DuckDB; rejected bytes removed. Image associations survive restart.
+  Back up DuckDB and the image directory together.
+- DuckDB uses an embedded one-connection JDBC pool. Explicit row locks are omitted;
+  this remains a single-instance experiment.
+- Services: Essential = local MVC, JPA/DuckDB, local approved-image storage;
   Enhancement = optional NVIDIA text. No external service needed for demo.
 - NVIDIA config: properties `app.nvidia.api-key`, `app.text.model`, `app.nvidia.base-url` (base excludes
   `/v1`, default `https://integrate.api.nvidia.com`). Spring AI appends
@@ -50,7 +59,7 @@ All mutation routes require a session CSRF `_csrf` form field. Open `/` first.
 | POST | `/novels/{n}/characters/{c}/save` | Edit name and visual description |
 | POST | `/novels/{n}/characters/{c}/delete` | Delete sheet, preserve draft snapshots |
 | GET | `/novels/{n}/chunks` | Chunk proposal/review |
-| POST | `/novels/{n}/chunks/propose` | `limit`, optional `revision` |
+| POST | `/novels/{n}/chunks/propose` | optional `revision`; analysis window is internal configuration |
 | POST | `/novels/{n}/chunks/confirm` | Confirm saved segments idempotently |
 | GET | `/novels/{n}/panels?chunkId={c}` | Panel negotiation for a chunk |
 | POST | `/novels/{n}/chunks/{c}/panels/propose` | `count`, optional `revision` |
@@ -71,28 +80,28 @@ All mutation routes require a session CSRF `_csrf` form field. Open `/` first.
 
 ## Verification
 
-- Tests: 36 passing (2 lossless chunking, 9 service workflow, 6 MockMvc/H2 HTTP,
-  19 demo/NVIDIA contract). Complete seven-screen HTTP flow, invalid UTF-8, CSRF,
+- Tests: 57 passing with DuckDB/H2. Complete
+  seven-screen HTTP flow, invalid UTF-8, CSRF,
   ownership, 1/2-panel selection, state guards, narrative ordering, snapshots,
-  idempotent approval, and approved-only disk storage covered.
-- H2 tests execute Liquibase and validate the schema; repeated migration execution
-  leaves one changeset. H2 is absent from the packaged JAR.
-- Real SQLite startup/schema validation and persistence of a novel/character across
-  restart passed. JDBC binary roundtrip (300 KB) and foreign-key rejection passed;
-  the JDBC fixture was rolled back. No live AI provider was used for these checks.
+  idempotent approval, approved-only disk storage, DuckDB/H2 cache persistence,
+  expiration, exact-request hits, key separation, and malformed-response handling covered.
+- H2 tests execute the test Liquibase changelog. A separate DuckDB test verifies
+  JPA persistence and sequence generation.
 - Character FK persistence, orphan removal, input validation, cross-novel guards,
   escaped HTML, context limits, and immutable draft/candidate snapshots covered.
 - Desktop browser character create/edit and two-panel plus character selection
   passed. The candidate contains the selected visual sheet and images render.
 - Official Maven distribution SHA-512 verified; wrapper pins SHA-256.
 - Versions: Boot 3.5.7; Spring AI 1.1.0; Maven 3.9.11; wrapper plugin 3.3.4;
-  SQLite JDBC 3.49.1.0; Liquibase 4.31.1; H2 2.3.232 (tests only);
-  Hibernate/community dialects 6.6.33.Final; HTMX 2.0.4; Lucide 0.468.0.
+  DuckDB JDBC 2.0.0.1; Liquibase 4.31.1 and H2
+  2.3.232 (tests only); Hibernate 6.6.33.Final; HTMX 2.0.4; Lucide 0.468.0.
 - Java certificate issue on this Windows machine: use
   `MAVEN_OPTS=-Djavax.net.ssl.trustStoreType=Windows-ROOT -Djavax.net.ssl.trustStore=NONE`
   if necessary. TLS validation was not disabled.
 - NVIDIA chunk negotiation covers every bounded source window with validated unit
   endpoints; it never rewrites source text or sends the whole novel at once.
+- Cache stores successful operation-validated responses only; TTL is configurable
+  with `app.ai.cache.ttl` (default 30 days). Exact repeated requests hit cache.
 - Browser demo workflow passed: zero reader images before approval, one afterwards.
 - Desktop and 390 px mobile screenshots reviewed. All six mobile views checked
   without page-width overflow or broken images. Real NVIDIA inference unverified.
@@ -105,5 +114,6 @@ All mutation routes require a session CSRF `_csrf` form field. Open `/` first.
 Configure and test actual NVIDIA inference only with privately supplied credentials.
 Select a real image provider before replacing the explicit demo adapter. Stop a
 running JAR before rebuilding on Windows to avoid locked/replaced archive errors.
-Do not provision cloud resources. New schema changes require versioned Liquibase
-changesets and SQLite compatibility checks; H2 remains the automated test database.
+Do not provision cloud resources. Update `db/duckdb/schema.sql` for DuckDB schema
+experiments; the old Liquibase changelog is retained for H2 tests. DuckDB VSS/vector
+search has not yet been wired into the application.

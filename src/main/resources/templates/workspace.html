@@ -4,10 +4,10 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="htmx-config" content='{"allowEval":false,"includeIndicatorStyles":false,"allowScriptTags":false}'>
   <title th:text="${novel != null ? novel.title + ' | Higanbana' : 'Novelas | Higanbana'}">Higanbana</title>
-  <link rel="stylesheet" href="/app.css"><script src="/vendor/htmx.min.js" defer></script><script src="/vendor/lucide.min.js" defer></script><script src="/app.js" defer></script>
+  <link rel="stylesheet" href="/app.css"><link rel="stylesheet" href="/footer.css"><script src="/vendor/htmx.min.js" defer></script><script src="/vendor/lucide.min.js" defer></script><script src="/app.js" defer></script>
 </head>
 <body hx-boost="true" hx-indicator="#busy">
-<header class="topbar"><a class="brand" href="/">Higanbana<span>ESTUDIO DE MANGA</span></a><div class="environment"><span class="dot"></span><span th:text="${textProvenance}"></span><span class="tag">Imagen DEMO</span></div></header>
+<header class="topbar"><a class="brand" href="/">Higanbana<span>ESTUDIO DE MANGA</span></a><div class="environment"><span class="dot"></span><span th:text="${view == 'chunks' ? chunkProvenance : textProvenance}"></span><span th:unless="${view == 'chunks'}" class="tag">Imagen DEMO</span></div></header>
 <div class="shell">
   <aside class="sidebar">
     <p class="eyebrow">PROYECTO LOCAL</p>
@@ -23,7 +23,7 @@
         <span th:unless="${novel != null}" class="disabled"><span class="step" th:text="${stage == 'chunks' ? '02' : stage == 'panels' ? '03' : stage == 'studio' ? '04' : stage == 'generation' ? '05' : '06'}"></span><span th:text="${stage == 'chunks' ? 'Chunks' : stage == 'panels' ? 'Paneles' : stage == 'studio' ? 'Estudio' : stage == 'generation' ? 'Generacion' : 'Lector'}"></span></span>
       </th:block>
     </nav>
-    <div class="storage-note"><i data-lucide="database" aria-hidden="true"></i><strong>Almacenamiento local</strong><p>Novelas y personajes en SQLite. Imagenes aprobadas en disco.</p></div>
+    <div class="storage-note"><i data-lucide="database" aria-hidden="true"></i><strong>Almacenamiento local</strong><p>Novelas y personajes en DuckDB. Imagenes aprobadas en disco.</p></div>
   </aside>
   <main id="main">
     <div id="busy" class="htmx-indicator" role="status">Procesando solicitud...</div>
@@ -70,16 +70,17 @@
     </section>
 
     <section th:if="${view == 'chunks'}">
-      <div class="page-heading"><div><p class="eyebrow">02 / SEGMENTACION</p><h1>Chunks</h1></div><span class="tag" th:text="${#strings.length(novel.source)} + ' caracteres originales'"></span></div>
-      <form th:if="${plan == null or !plan.confirmed}" th:action="@{/novels/{id}/chunks/propose(id=${novel.id})}" method="post" class="editor-form">
+      <div class="page-heading"><div><p class="eyebrow">02 / SEGMENTACION NARRATIVA</p><h1>Chunks narrativos</h1></div><span class="tag" th:text="${novel.title}"></span></div>
+      <p class="notice" th:unless="${chunkingAvailable}">Segmentacion no disponible. Falta configurar NVIDIA, la clave o el modelo de texto.</p>
+      <form th:if="${chunkingAvailable and (plan == null or !plan.confirmed)}" th:action="@{/novels/{id}/chunks/propose(id=${novel.id})}" method="post" class="editor-form">
         <input type="hidden" name="_csrf" th:value="${csrf}">
-        <div class="form-columns"><div><label for="limit">Maximo de caracteres por chunk</label><input id="limit" type="number" name="limit" min="200" max="8000" th:value="${plan != null ? plan.chunkLimit : 2400}" required></div><div><label for="revision">Revision del ritmo</label><input id="revision" name="revision" maxlength="1500" placeholder="P. ej. escenas breves y pausas claras"></div></div>
-        <button type="submit"><i data-lucide="split" aria-hidden="true"></i><span th:text="${plan == null ? 'Proponer chunks' : 'Revisar propuesta'}"></span></button>
+        <label for="revision">Criterio narrativo</label><textarea id="revision" name="revision" rows="3" maxlength="1500" placeholder="Cambios de escenario, saltos temporales, continuidad de dialogos..."></textarea>
+        <button type="submit"><i data-lucide="split" aria-hidden="true"></i><span th:text="${plan == null ? 'Proponer escenas' : 'Revisar propuesta'}"></span></button>
       </form>
       <th:block th:if="${plan != null}">
-        <div class="section-heading"><h2 th:text="${#lists.size(plan.segments)} + ' chunks / texto integro'"></h2><span class="tag" th:text="${plan.confirmed ? 'Confirmados' : 'Propuesta pendiente'}"></span></div>
+        <div class="section-heading"><h2 th:text="${#lists.size(plan.segments)} + ' escenas / texto integro'"></h2><span class="tag" th:text="${plan.confirmed ? 'Confirmados' : 'Propuesta pendiente'}"></span></div>
         <p class="advice" th:text="${plan.advice}"></p>
-        <details th:each="segment,stat : ${plan.segments}"><summary><strong th:text="'Chunk ' + ${stat.count}"></strong><span th:text="${#strings.length(segment)} + ' caracteres'"></span></summary><pre class="source-text" th:text="${segment}"></pre></details>
+        <details th:each="segment,stat : ${plan.segments}"><summary><strong th:text="'Escena ' + ${stat.count}"></strong></summary><pre class="source-text" th:text="${segment}"></pre></details>
         <form th:unless="${plan.confirmed}" th:action="@{/novels/{id}/chunks/confirm(id=${novel.id})}" method="post" class="action-bar"><input type="hidden" name="_csrf" th:value="${csrf}"><button><i data-lucide="check" aria-hidden="true"></i> Confirmar todos los chunks</button></form>
         <a th:if="${plan.confirmed}" class="button" th:href="@{/novels/{id}/panels(id=${novel.id})}">Ir a paneles <i data-lucide="arrow-right" aria-hidden="true"></i></a>
       </th:block>
@@ -143,7 +144,11 @@
       <p class="empty" th:if="${#lists.isEmpty(entries)}">Todavia no hay imagenes aprobadas. <a th:href="@{/novels/{id}/generation(id=${novel.id})}">Revisar candidatos</a></p>
       <div class="reader"><figure th:each="entry,stat : ${entries}"><img th:src="@{/novels/{id}/entries/{entry}/image(id=${novel.id},entry=${entry.id})}" th:alt="${entry.caption}"><figcaption><span th:text="'Secuencia ' + ${stat.count}"></span><span th:text="${entry.provenance}"></span><a th:href="@{/novels/{id}/entries/{entry}/image(id=${novel.id},entry=${entry.id})}" th:download="${entry.filename}" title="Descargar imagen" aria-label="Descargar imagen" hx-boost="false"><i data-lucide="download" aria-hidden="true"></i></a></figcaption></figure></div>
     </section>
-    <footer>Higanbana <span>LOCAL / SQLITE</span></footer>
+    <footer class="app-footer">
+      <a class="footer-brand" href="/" aria-label="Higanbana, inicio"><i data-lucide="flower-2" aria-hidden="true"></i><span>Higanbana</span></a>
+      <div class="footer-storage"><span class="footer-status" aria-hidden="true"></span><i data-lucide="database" aria-hidden="true"></i><strong>DuckDB</strong><span class="footer-divider">/</span><span>Local</span></div>
+      <span class="footer-meta">ESTUDIO DE MANGA</span>
+    </footer>
   </main>
 </div>
 </body>

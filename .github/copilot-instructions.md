@@ -20,6 +20,20 @@
 - Multi-component records remain appropriate for actual composite data. Do not
   replace them with Optional, which expresses presence/absence, not aggregation.
 
+## Java Structure
+
+- Keep Java package names aligned with source directories and give each top-level
+  type its own file.
+- Keep JPA entities, domain rules, and application-facing interfaces/ports in
+  `domain` (group specialized contracts under packages such as `domain.ai`);
+  use `application` for transactional workflows and use cases.
+- Keep MVC controllers grouped by feature under `web/controller`; put request
+  DTOs and cross-cutting web error handling in `web/dto` and `web/error`.
+- Keep provider clients and storage adapters in `infrastructure`, implementing
+  their domain interfaces; keep framework configuration in `config`.
+- Do not move business rules into controllers or add unrelated endpoints to a
+  generic controller just to share a file.
+
 ## Real Implementations
 
 - Implement real application behavior going forward; do not add new demo modes.

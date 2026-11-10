@@ -92,6 +92,7 @@ app.text-mode=demo
 app.text.model=meta/llama-3.1-8b-instruct
 app.image.model=
 app.nvidia.base-url=https://integrate.api.nvidia.com
+app.ai.cache.ttl=30d
 ```
 
 `app.text-mode` accepts only `demo` or `nvidia`, not `text`. The text model is used
@@ -108,10 +109,10 @@ app.nvidia.api-key=your-new-token
 ```
 
 Replace the placeholder privately. An existing local key is preserved during
-configuration migration; rotate any key previously saved in source or shared.
+configuration; rotate any key previously saved in source or shared.
 Do not commit the local file. Run Maven or the JAR from the project directory so
 the relative import resolves, and restart after changing configuration. Application
-data persists in SQLite. Integration tests override credentials with a fake test key
+data persists in DuckDB. Integration tests override credentials with a fake test key
 and force demo text mode; NVIDIA HTTP contract tests use a mock server.
 
 Spring AI uses the OpenAI-compatible chat-completions contract:
@@ -126,8 +127,8 @@ Missing credentials or text model in NVIDIA mode fail startup. Errors never sile
 to demo or display provider response bodies/API keys.
 
 Each text request is bounded to 8,000 context characters plus 1,500 revision
-characters, with `max_tokens=1800`, one attempt, 10 s connection timeout and 60 s
-read timeout. In NVIDIA mode the entire novel is processed in local windows of
+characters, with `max_tokens=1800`, one attempt, a configurable `app.nvidia.connect-timeout`
+(default 10 s) and `app.nvidia.read-timeout` (default 180 s). In NVIDIA mode the entire novel is processed in local windows of
 at most 6,000 characters (or the chosen smaller chunk limit). Within each window,
 the model groups numbered source units; validated end indices select exact source
 substrings without rewriting or dropping text. Windows are processed sequentially,
@@ -136,6 +137,19 @@ Panel planning sees one chunk; studio sees selected panel descriptions.
 Output structures/counts are validated before persistence. Source
 text is untrusted narrative content, not system instructions. This is not a
 guarantee against model prompt injection; inspect proposals before confirming.
+
+Successful NVIDIA text responses are cached in DuckDB for 30 days by default.
+`app.ai.cache.ttl` configures the retention period. The SHA-256 key covers the
+operation, provider endpoint, model, prompt version, generation parameters, and
+the complete final request text, so changed context or instructions trigger a new
+inference. Identical concurrent requests in this process share one in-flight call.
+Only responses that pass operation-specific validation are stored; provider errors
+and malformed output are never cached. The original prompt/source is not copied to
+the cache table, only its hash, metadata, and validated response. Cached responses
+are still model output: review them before confirming chunks or panels. To force a
+fresh response after a prompt implementation change, increment `PROMPT_VERSION` in
+`TextAssistant`; existing entries expire naturally. Expired rows are ignored and
+cleaned on subsequent cache writes.
 
 **Images always remain DEMO**, even when NVIDIA text is enabled. No real image
 API is invented or called. Implement `ImageProvider` and replace the demo bean
@@ -146,41 +160,34 @@ To return to demo, set `app.text-mode=demo` in the local file and restart.
 
 ## Storage And Safety
 
-- The application uses **SQLite**, stored in `./higanbana.db` relative to the
-  working directory. Novels, characters, plans, panels, drafts, candidates, and
-  reader associations survive restart. Database/WAL files are ignored by Git.
-- Liquibase creates and upgrades the schema at startup. Hibernate uses
-  `ddl-auto=validate`: it neither creates nor drops application tables.
-- H2 is **test-only**, in memory, selected by `@ActiveProfiles("test")`.
-  The tests run the same Liquibase changelog and Hibernate schema validation.
-- Pending candidate bytes live in SQLite; rejection removes those bytes.
+- The application uses **DuckDB**, stored in `./higanbana.duckdb`. Novels,
+  characters, plans, panels, drafts, candidates, and reader associations survive
+  restart. DuckDB database/WAL files are ignored by Git.
+- DuckDB's schema is initialized from `src/main/resources/db/duckdb/schema.sql`.
+  Hibernate uses PostgreSQL-compatible SQL with automatic DDL disabled; a shared
+  sequence generates IDs. H2 and Liquibase remain test-only.
+- Pending candidate bytes live in DuckDB; rejection removes those bytes.
 - Only approval writes a UUID-named file to `./data/manga`. Configure the path with
   `app.manga-dir` in properties. Normal transaction rollback cleans up a newly written file.
-- Approved files and their SQLite associations both survive restart. Back up the
-  database and `data/manga` together. Stop the application cleanly before copying
-  files, or use SQLite's backup API; do not copy just the main file of a live WAL
-  database. A process crash can still leave an orphan image file.
-- SQLite enables foreign keys, WAL journaling, and a 10-second busy timeout.
-  A one-connection JDBC pool serializes this local instance's transactions;
-  SQLite does not provide row-level `FOR UPDATE` locks. This is not a multi-user
-  authorization or multi-instance coordination setup.
+- Approved files and their DuckDB associations both survive restart. Back up the
+  database and `data/manga` together. Stop the app cleanly before copying DuckDB
+  and its WAL. A process crash can still leave an orphan image file.
+- DuckDB is embedded and the one-connection JDBC pool is for this local experiment;
+  explicit row locks are omitted.
+- AI response cache metadata and validated responses are stored in DuckDB;
+  prompts and source text are not. Cache retention defaults to 30 days.
 - Forms use session CSRF tokens, strict same-site cookies, escaped Thymeleaf text,
   a same-origin CSP, and local browser assets. There is no production auth setup.
 - HTML forms use HTMX navigation; importing a file uses standard multipart POST.
   Core workflows also work without JavaScript. No CDN is contacted at runtime.
 
-## Database Migrations
+## DuckDB Schema
 
-The entry point is `src/main/resources/db/changelog/db.changelog-master.xml`.
-It includes `changes/001-initial-schema.xml`, which creates the application tables,
-ordered collections, relationship foreign keys, and unique indexes. Liquibase
-tracks applied changes in `DATABASECHANGELOG` and does not repeat them on restart.
-
-Add new versioned changelog files and include them from the master. Do not edit
-applied changesets, clear checksums, or enable Hibernate schema updates to bypass
-a migration failure. SQLite has limited `ALTER TABLE` support: plan later changes
-accordingly. Test migrations on H2 and verify SQLite compatibility before release.
-The old in-memory H2 sessions are not imported into SQLite.
+The active DuckDB schema is `src/main/resources/db/duckdb/schema.sql`, applied
+idempotently on startup. Add experimental schema changes there. H2 tests continue
+to run the test Liquibase changelog independently. The AI response cache table is
+created in both schemas. DuckDB vector search/embeddings
+are not wired into the application yet.
 
 ## Verified Build
 
@@ -192,45 +199,53 @@ Pinned, resolvable Maven Central releases:
 | Spring Boot | 3.5.7 |
 | Spring AI | 1.1.0 (documented Boot 3.4/3.5 compatibility) |
 | Maven / Wrapper plugin | 3.9.11 / 3.3.4, official only-script wrapper |
-| SQLite JDBC / SQLite engine | 3.49.1.0 / 3.49.1 |
-| Liquibase | 4.31.1, Boot-managed |
-| Hibernate / community dialects | 6.6.33.Final, Boot-managed |
-| H2 (tests only) | 2.3.232, Boot-managed |
+| DuckDB JDBC / engine | 2.0.0.1 / 2.0.0.1 |
+| Hibernate | 6.6.33.Final, Boot-managed |
+| Liquibase / H2 (tests only) | 4.31.1 / 2.3.232, Boot-managed |
 | HTMX / Lucide | 2.0.4 / 0.468.0, vendored with licenses |
 
-The POM includes MVC, Thymeleaf, Validation, Data JPA, SQLite, Liquibase, the Spring AI OpenAI
-module (no credential-requiring AI autoconfiguration), and Boot test support.
-H2 has test scope and is absent from the packaged application.
+The POM includes MVC, Thymeleaf, Validation, Data JPA, DuckDB JDBC, Liquibase/H2
+for tests, Spring AI OpenAI, and Boot test support.
 
 `./mvnw.cmd clean verify` runs lossless segmentation tests, service state/selection
-tests, a complete seven-screen MockMvc/H2 workflow, character persistence and
-orphan removal, prompt snapshots, multipart/CSRF/ownership checks, Liquibase
-idempotency and H2 test isolation,
-and mock NVIDIA HTTP contract tests. See
-`target/surefire-reports` for results. The complete demo workflow was also checked
+tests, a complete seven-screen MockMvc/H2 workflow, DuckDB JPA startup and sequence
+tests, character persistence and orphan removal, prompt snapshots, multipart/CSRF/
+ownership, and H2 test isolation,
+and mock NVIDIA HTTP contract tests, plus DuckDB/H2 cache persistence, expiry,
+cache hits, request-key separation, and invalid-response handling. The verified
+suite passes 57 tests; see `target/surefire-reports` for results. The complete demo workflow was also checked
 in a browser: zero reader images before approval and one afterwards. Desktop and
 390 px mobile screenshots were reviewed; all six mobile views had no page-width
 overflow or broken images. The new characters screen and two-panel/character
 selection were additionally verified on desktop. Stop a running JAR before
 rebuilding it on Windows.
-SQLite was separately verified with real startup, schema validation, novel/character
-creation and persistence across restart, foreign-key enforcement, a rolled-back
-300 KB binary roundtrip, and an unchanged migration count on subsequent starts.
+The real app was started against DuckDB and loaded the four stored novels, including
+the 35,000-character source.
 These are database checks, not a claim of live NVIDIA/image inference verification.
 
 ## Code Map
 
-- `src/main/java/local/higanbana/domain`: one JPA entity per file, plus `Row` and
+- `src/main/java/local/higanbana/domain`: one JPA entity per file, plus `Chunking`, `Row` and
   `ReviewState`. `Novel` owns `NovelCharacter` through a bidirectional relationship.
-- `Workflow.java`: transactional behavior, state checks, local approval storage.
-- `Chunking.java`: lossless local segmentation.
-- `TextAssistant.java`: explicit demo or configurable NVIDIA text via Spring AI.
-- `ImageProvider.java` / `DemoImageProvider.java`: replaceable image boundary.
-- `WebController.java` / `WebConfiguration.java`: MVC, UTF-8, CSRF, headers, timeouts.
+- `src/main/java/local/higanbana/application/Workflow.java`: transactional
+  application workflow, ownership/state checks, and local approval storage.
+- `src/main/resources/db/duckdb/schema.sql`: active DuckDB tables and indexes.
+- `src/main/java/local/higanbana/infrastructure/ai`: NVIDIA client and persistent
+  validated-response cache; `JdbcAiResponseCache` is backed by DuckDB JDBC.
+- `src/main/java/local/higanbana/infrastructure/ai/TextAssistant.java`: NVIDIA
+  text provider and bounded narrative segmentation.
+- `src/main/java/local/higanbana/infrastructure/image`: image-provider contract
+  and current demo adapter.
+- `src/main/java/local/higanbana/web/controller`: workspace, character, chunk,
+  panel, studio, generation, and image controllers; route URLs remain unchanged.
+- `src/main/java/local/higanbana/web/dto` and `web/error`: form DTOs and global
+  MVC error handling. `src/main/java/local/higanbana/config`: web security headers,
+  CSRF, and provider timeouts.
 - `src/main/resources/templates`: seven workspace views and actionable error screen.
 - `src/main/resources/static`: responsive CSS, progressive JS, local libraries.
-- `src/main/resources/db/changelog`: versioned Liquibase schema migrations.
+- `src/main/resources/db/duckdb/schema.sql`: active DuckDB schema initialization.
+- `src/main/resources/db/changelog`: legacy schema used by H2 tests only.
 - `src/test/resources/application-test.properties`: H2-only test configuration.
-- `.azure/integration-plan.md`: route inventory and remaining verification notes.
+- `.azure/integration-plan.md`: package map, route inventory, and verification notes.
 
-This boilerplate is local-only and needs human review before any production use.
+This is an experimental learning project; DuckDB VSS/embedding search is a later step.

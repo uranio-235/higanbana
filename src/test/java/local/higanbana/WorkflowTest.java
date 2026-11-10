@@ -1,6 +1,8 @@
 package local.higanbana;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -12,7 +14,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import local.higanbana.domain.*;
+import local.higanbana.domain.Chunking;
+import local.higanbana.application.Workflow;
+import local.higanbana.infrastructure.ai.TextAssistant;
 import static org.assertj.core.api.Assertions.*;
+import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.*;
 
 @SpringBootTest(properties = "app.nvidia.api-key=test-key")
 @ActiveProfiles("test")
@@ -24,7 +31,22 @@ class WorkflowTest {
         registry.add("app.text-mode", () -> "demo");
     }
     @Autowired Workflow workflow;
+    @MockitoSpyBean TextAssistant text;
     @Autowired jakarta.persistence.EntityManager em;
+
+    @BeforeEach void stubChunkProviderOnlyInTests() {
+        doAnswer(invocation -> Chunking.split(invocation.getArgument(0), invocation.getArgument(1)))
+                .when(text).chunks(anyString(), anyInt(), anyString());
+    }
+
+    @Test void failedNarrativeRevisionKeepsThePreviousProposal() {
+        Novel novel = workflow.createNovel("Escenas", "Primera escena. Segunda escena.");
+        var plan = workflow.proposeChunks(novel.id, "Cambios de lugar");
+        var previous = List.copyOf(plan.segments);
+        doThrow(new IllegalArgumentException("Proveedor no disponible")).when(text).chunks(anyString(), anyInt(), anyString());
+        assertThatIllegalArgumentException().isThrownBy(() -> workflow.proposeChunks(novel.id, "Revisar"));
+        assertThat(workflow.chunkPlan(novel.id).segments).containsExactlyElementsOf(previous);
+    }
 
     @Test void novelCharactersPersistThroughRelationshipAndOrphansAreRemoved() {
         Novel novel = workflow.createNovel("Reparto", "Texto original.");

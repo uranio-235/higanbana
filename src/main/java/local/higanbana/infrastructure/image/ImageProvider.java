@@ -1,4 +1,4 @@
-package local.higanbana;
+package local.higanbana.infrastructure.image;
 
 public interface ImageProvider {
     ImageResult generate(String prompt);
