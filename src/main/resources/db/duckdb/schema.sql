@@ -45,6 +45,13 @@ CREATE TABLE IF NOT EXISTS chunk_plan_segments (
     PRIMARY KEY (chunk_plan_id, segment_order)
 );
 
+CREATE TABLE IF NOT EXISTS chunk_plan_confirmation (
+    chunk_plan_id BIGINT PRIMARY KEY REFERENCES chunk_plan(id)
+);
+INSERT INTO chunk_plan_confirmation (chunk_plan_id)
+SELECT id FROM chunk_plan WHERE confirmed = TRUE
+ON CONFLICT DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS chunk (
     id BIGINT PRIMARY KEY,
     version BIGINT NOT NULL,
@@ -64,6 +71,15 @@ CREATE TABLE IF NOT EXISTS panel_plan (
     provenance VARCHAR(255)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_panel_plan_chunk ON panel_plan(chunk_id);
+
+CREATE TABLE IF NOT EXISTS panel_plan_confirmation (
+    panel_plan_id BIGINT PRIMARY KEY REFERENCES panel_plan(id),
+    provenance VARCHAR(255)
+);
+ALTER TABLE panel_plan_confirmation ADD COLUMN IF NOT EXISTS provenance VARCHAR(255);
+INSERT INTO panel_plan_confirmation (panel_plan_id, provenance)
+SELECT id, provenance FROM panel_plan WHERE confirmed = TRUE
+ON CONFLICT (panel_plan_id) DO UPDATE SET provenance = coalesce(panel_plan_confirmation.provenance, excluded.provenance);
 
 CREATE TABLE IF NOT EXISTS panel_plan_descriptions (
     panel_plan_id BIGINT NOT NULL REFERENCES panel_plan(id),

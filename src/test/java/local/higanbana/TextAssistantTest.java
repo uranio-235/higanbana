@@ -37,14 +37,16 @@ class TextAssistantTest {
                                 .withMessageContaining("app.text-mode debe ser demo o nvidia");
         }
 
-    @Test void nvidiaExtractsPanelsWithoutAWrapperRecord() throws Exception {
+        @Test void nvidiaExtractsImagePromptsWithoutAWrapperRecord() throws Exception {
         RestClient.Builder builder = RestClient.builder();
         var server = MockRestServiceServer.bindTo(builder).build();
         server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("prompts independientes")))
                 .andRespond(withSuccess(completion("{\"panels\":[\"Plano general.\",\"Primer plano.\"]}"), MediaType.APPLICATION_JSON));
         var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
                 "test-model", new ObjectMapper(), builder);
-        assertThat(assistant.panels("Una estacion.", 2, "")).containsExactly("Plano general.", "Primer plano.");
+        assertThat(assistant.imagePanelPrompts("Una estacion.", 2, ""))
+                .containsExactly("Plano general.", "Primer plano.");
         server.verify();
     }
 
@@ -57,8 +59,8 @@ class TextAssistantTest {
                 .andRespond(withSuccess(completion(payload), MediaType.APPLICATION_JSON));
         var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
                 "test-model", new ObjectMapper(), builder);
-        assertThatIllegalArgumentException().isThrownBy(() -> assistant.panels("Una estacion.", 1, ""))
-                .withMessageContaining("propuesta no valida");
+        assertThatIllegalArgumentException().isThrownBy(() -> assistant.imagePanelPrompts("Una estacion.", 1, ""))
+                .withMessageContaining("prompts de imagen no validos");
         server.verify();
     }
 
@@ -174,7 +176,7 @@ class TextAssistantTest {
         server.verify();
     }
 
-    @Test void nvidiaUsesOpenAiContractWithBoundedOutput() {
+        @Test void nvidiaUsesOpenAiContractToGenerateImagePromptsWithBoundedOutput() {
         RestClient.Builder builder = RestClient.builder();
         var server = MockRestServiceServer.bindTo(builder).build();
         server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
@@ -184,12 +186,13 @@ class TextAssistantTest {
                 .andExpect(jsonPath("$.max_tokens").value(1800))
                 .andRespond(withSuccess("""
                         {"id":"test","object":"chat.completion","created":1,"model":"meta/llama-3.1-8b-instruct",
-                        "choices":[{"index":0,"message":{"role":"assistant","content":"Un plano general."},"finish_reason":"stop"}],
+                        "choices":[{"index":0,"message":{"role":"assistant","content":"{\\\"panels\\\":[\\\"Una viajera en primer plano, lluvia al fondo.\\\"]}"},"finish_reason":"stop"}],
                         "usage":{"prompt_tokens":10,"completion_tokens":8,"total_tokens":18}}
                         """, MediaType.APPLICATION_JSON));
         var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
                 "meta/llama-3.1-8b-instruct", new ObjectMapper(), builder);
-        assertThat(assistant.describe("Una estacion.", "Luz lateral")).isEqualTo("Un plano general.");
+        assertThat(assistant.imagePanelPrompts("Una estacion.", 1, "Luz lateral"))
+                .containsExactly("Una viajera en primer plano, lluvia al fondo.");
         assertThat(assistant.provenance()).contains("NVIDIA");
         server.verify();
     }
@@ -199,15 +202,15 @@ class TextAssistantTest {
         var server = MockRestServiceServer.bindTo(builder).build();
         server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
                 .andExpect(jsonPath("$.model").value("test-model"))
-                .andRespond(withSuccess(completion("Retrato en tinta negra."), MediaType.APPLICATION_JSON));
+                .andRespond(withSuccess(completion("{\"panels\":[\"Retrato en tinta negra.\"]}"), MediaType.APPLICATION_JSON));
         var cache = new InMemoryAiResponseCache();
         var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
                 "test-model", new ObjectMapper(), builder, cache);
 
-        assertThat(assistant.describe("Aiko bajo la lluvia.", "Plano cercano."))
-                .isEqualTo("Retrato en tinta negra.");
-        assertThat(assistant.describe("Aiko bajo la lluvia.", "Plano cercano."))
-                .isEqualTo("Retrato en tinta negra.");
+        assertThat(assistant.imagePanelPrompts("Aiko bajo la lluvia.", 1, "Plano cercano."))
+                .containsExactly("Retrato en tinta negra.");
+        assertThat(assistant.imagePanelPrompts("Aiko bajo la lluvia.", 1, "Plano cercano."))
+                .containsExactly("Retrato en tinta negra.");
         server.verify();
     }
 
@@ -232,24 +235,24 @@ class TextAssistantTest {
         var server = MockRestServiceServer.bindTo(builder).build();
         server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
                 .andExpect(jsonPath("$.model").value("model-a"))
-                .andRespond(withSuccess(completion("Respuesta A."), MediaType.APPLICATION_JSON));
+                .andRespond(withSuccess(completion("{\"panels\":[\"Respuesta A.\"]}"), MediaType.APPLICATION_JSON));
         server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
                 .andExpect(jsonPath("$.model").value("model-b"))
-                .andRespond(withSuccess(completion("Respuesta B."), MediaType.APPLICATION_JSON));
+                .andRespond(withSuccess(completion("{\"panels\":[\"Respuesta B.\"]}"), MediaType.APPLICATION_JSON));
         server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
                 .andExpect(jsonPath("$.model").value("model-a"))
-                .andRespond(withSuccess(completion("Respuesta C."), MediaType.APPLICATION_JSON));
+                .andRespond(withSuccess(completion("{\"panels\":[\"Respuesta C.\"]}"), MediaType.APPLICATION_JSON));
         var cache = new InMemoryAiResponseCache();
 
         assertThat(assistant("nvidia", "https://integrate.api.nvidia.com", "test-key", "model-a",
-                new ObjectMapper(), builder, cache).describe("Aiko espera.", "Plano general."))
-                .isEqualTo("Respuesta A.");
+                new ObjectMapper(), builder, cache).imagePanelPrompts("Aiko espera.", 1, "Plano general."))
+                .containsExactly("Respuesta A.");
         assertThat(assistant("nvidia", "https://integrate.api.nvidia.com", "test-key", "model-b",
-                new ObjectMapper(), builder, cache).describe("Aiko espera.", "Plano general."))
-                .isEqualTo("Respuesta B.");
+                new ObjectMapper(), builder, cache).imagePanelPrompts("Aiko espera.", 1, "Plano general."))
+                .containsExactly("Respuesta B.");
         assertThat(assistant("nvidia", "https://integrate.api.nvidia.com", "test-key", "model-a",
-                new ObjectMapper(), builder, cache).describe("Aiko corre.", "Plano general."))
-                .isEqualTo("Respuesta C.");
+                new ObjectMapper(), builder, cache).imagePanelPrompts("Aiko corre.", 1, "Plano general."))
+                .containsExactly("Respuesta C.");
         server.verify();
     }
 
@@ -263,8 +266,8 @@ class TextAssistantTest {
         var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
                 "test-model", new ObjectMapper(), builder, new InMemoryAiResponseCache());
 
-        assertThatIllegalArgumentException().isThrownBy(() -> assistant.panels("Aiko espera.", 2, ""));
-        assertThatIllegalArgumentException().isThrownBy(() -> assistant.panels("Aiko espera.", 2, ""));
+        assertThatIllegalArgumentException().isThrownBy(() -> assistant.imagePanelPrompts("Aiko espera.", 2, ""));
+        assertThatIllegalArgumentException().isThrownBy(() -> assistant.imagePanelPrompts("Aiko espera.", 2, ""));
         server.verify();
     }
 
@@ -276,16 +279,17 @@ class TextAssistantTest {
                         "<source>Una estacion.</source>")))
                 .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.not(
                         org.hamcrest.Matchers.containsString("Revision del usuario:"))))
-                .andRespond(withSuccess(completion("Respuesta"), MediaType.APPLICATION_JSON));
+                .andRespond(withSuccess(completion("{\"panels\":[\"Respuesta\"]}"), MediaType.APPLICATION_JSON));
         server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
                 .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString(
                         "Revision del usuario: Separa el salto temporal.")))
-                .andRespond(withSuccess(completion("Respuesta"), MediaType.APPLICATION_JSON));
+                .andRespond(withSuccess(completion("{\"panels\":[\"Respuesta\"]}"), MediaType.APPLICATION_JSON));
 
         var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
                 "test-model", new ObjectMapper(), builder);
-        assertThat(assistant.describe("Una estacion.", "   ")).isEqualTo("Respuesta");
-        assertThat(assistant.describe("Una estacion.", "Separa el salto temporal.")).isEqualTo("Respuesta");
+        assertThat(assistant.imagePanelPrompts("Una estacion.", 1, "   ")).containsExactly("Respuesta");
+        assertThat(assistant.imagePanelPrompts("Una estacion.", 1, "Separa el salto temporal."))
+                .containsExactly("Respuesta");
         server.verify();
     }
 
@@ -297,7 +301,7 @@ class TextAssistantTest {
         var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
                 "test-model", new ObjectMapper(), builder);
 
-                assertThatIllegalArgumentException().isThrownBy(() -> assistant.describe("Una estacion.", ""))
+                assertThatIllegalArgumentException().isThrownBy(() -> assistant.imagePanelPrompts("Una estacion.", 1, ""))
                         .withMessageContaining("Palo No value present");
         server.verify();
     }
@@ -307,8 +311,8 @@ class TextAssistantTest {
         var server = MockRestServiceServer.bindTo(builder).build();
         var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
                 "test-model", new ObjectMapper(), builder);
-        assertThatIllegalArgumentException().isThrownBy(() -> assistant.describe("a".repeat(8001), ""));
-        assertThatIllegalArgumentException().isThrownBy(() -> assistant.describe("context", "a".repeat(1501)));
+        assertThatIllegalArgumentException().isThrownBy(() -> assistant.imagePanelPrompts("a".repeat(8001), 1, ""));
+        assertThatIllegalArgumentException().isThrownBy(() -> assistant.imagePanelPrompts("context", 1, "a".repeat(1501)));
         server.verify();
     }
 
@@ -319,18 +323,18 @@ class TextAssistantTest {
                 .andRespond(withStatus(HttpStatus.UNAUTHORIZED));
         var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "private-test-key",
                 "test-model", new ObjectMapper(), builder);
-                assertThatThrownBy(() -> assistant.describe("context", ""))
+                assertThatThrownBy(() -> assistant.imagePanelPrompts("context", 1, ""))
                         .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Palo 401")
                         .hasMessageNotContaining("private-test-key");
         server.verify();
     }
 
-    @Test void demoIsExplicitAndProducesRequestedPanelCountEvenForLongChunks() {
+    @Test void imagePanelPromptsAreUnavailableWithoutNvidiaAndNeverUseDemoText() {
         var assistant = assistant("demo", "https://integrate.api.nvidia.com", "", "unused",
                 new ObjectMapper(), RestClient.builder());
         assertThat(assistant.provenance()).contains("DEMO", "sin IA");
-        assertThat(assistant.panels("Texto narrativo. ".repeat(450), 1, "")).hasSize(1)
-                .allSatisfy(panel -> assertThat(panel.length()).isLessThan(3000));
-        assertThat(assistant.panels("Fin.", 12, "")).hasSize(12);
+        assertThat(assistant.imagePanelPromptsAvailable()).isFalse();
+        assertThatIllegalArgumentException().isThrownBy(() -> assistant.imagePanelPrompts("Fin.", 1, ""))
+                .withMessageContaining("requiere NVIDIA");
     }
 }

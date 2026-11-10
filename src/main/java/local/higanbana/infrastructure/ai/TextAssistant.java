@@ -25,12 +25,11 @@ import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
-import java.util.stream.IntStream;
 import java.util.function.Predicate;
 
 @Component
 public class TextAssistant {
-    private static final String PROMPT_VERSION = "2026-11-10-v1";
+    private static final String PROMPT_VERSION = "2026-11-10-v2";
     private static final double TEMPERATURE = 0.5;
     private static final int MAX_TOKENS = 1800;
     private final String mode;
@@ -85,6 +84,12 @@ public class TextAssistant {
 
     public String chunkProvenance() {
         return chunkingAvailable() ? "Escenas narrativas / NVIDIA" : "Segmentacion narrativa no disponible";
+    }
+
+    public boolean imagePanelPromptsAvailable() { return model != null; }
+
+    public String imagePanelPromptProvenance() {
+        return imagePanelPromptsAvailable() ? "Prompts de imagen / NVIDIA" : "Prompts de imagen no disponibles";
     }
 
     public List<String> chunks(String source, int limit, String revision) {
@@ -170,16 +175,19 @@ public class TextAssistant {
         return List.copyOf(result);
     }
 
-    public List<String> panels(String context, int count, String direction) {
-        if (mode.equals("demo")) {
-            var slices = Chunking.split(context, Math.max(2, (context.length() + count - 1) / count));
-            return IntStream.range(0, count).mapToObj(index -> "Plano " + (index + 1)
-                    + ": " + excerpt(slices.get(Math.min(index, slices.size() - 1)), 1400).strip()
-                    + (direction == null || direction.isBlank() ? "" : " | Direccion: " + direction)).toList();
+    public List<String> imagePanelPrompts(String context, int count, String direction) {
+        if (model == null) {
+            throw new IllegalArgumentException("Generar prompts de imagen requiere NVIDIA y un modelo de texto configurados.");
         }
-        String response = call("Devuelve SOLO JSON {\"panels\":[\"descripcion\"]} con exactamente "
-            + count + " descripciones en espanol, maximo 1500 caracteres cada una. Sin Markdown.",
-            context, direction, "panel-plans-v1", value -> validPanels(value, count));
+        String response = call("A partir del fragmento narrativo, genera exactamente " + count
+                + " prompts independientes para generar imagenes de panel manga. "
+                + "Cada prompt debe describir una imagen visual concreta: accion y personajes presentes, "
+                + "expresion y pose, encuadre/composicion y entorno pertinente. "
+                + "Conserva los hechos del fragmento, no inventes eventos ni dialogo escrito en la imagen. "
+                + "Cada prompt debe entenderse por si solo y no referirse a otros paneles. "
+                + "Devuelve SOLO JSON {\"panels\":[\"prompt visual\"]}; cada prompt en espanol, "
+                + "maximo 1500 caracteres. Sin Markdown.",
+                context, direction, "image-panel-prompts-v1", value -> validPanels(value, count));
         try {
                 return Optional.ofNullable(mapper.readTree(response))
                     .map(root -> root.get("panels"))
@@ -187,17 +195,8 @@ public class TextAssistant {
                     .map(value -> mapper.convertValue(value, new TypeReference<List<String>>() {}))
                     .orElseThrow(IllegalArgumentException::new);
         } catch (Exception exception) {
-            throw new IllegalArgumentException("NVIDIA devolvio una propuesta no valida; revisa o vuelve a intentar.");
+            throw new IllegalArgumentException("NVIDIA devolvio prompts de imagen no validos; no se guardo la propuesta.");
         }
-    }
-
-    public String describe(String context, String direction) {
-        if (mode.equals("demo")) {
-            return "Manga monocromo, tinta de alto contraste. " + excerpt(context, 4000)
-                    + (direction == null || direction.isBlank() ? "" : "\nDireccion visual: " + direction);
-        }
-        return call("Redacta un prompt de manga en espanol de maximo 4000 caracteres. Conserva orden y continuidad.",
-                context, direction, "image-prompts-v1", value -> !value.isBlank() && value.length() <= 4000);
     }
 
     private String call(String task, String context, String revision, String operation, Predicate<String> validator) {
@@ -224,19 +223,14 @@ public class TextAssistant {
                     return cached.orElseThrow();
                 }
 
-                String generation;
-                try {
-                    Prompt prompt = Prompt.builder().content(requestContent).build();
-                    ChatResponse response = model.call(prompt);
-                    generation = Optional.ofNullable(response)
-                            .map(resp -> resp.getResult())
-                            .map(gen -> gen.getOutput())
-                            .map(output -> output.getText())
-                            .filter(text -> !text.isBlank())
-                            .orElseThrow();
-                } catch (Exception exception) {
-                    throw new IllegalArgumentException("Palo " + exception.getMessage(), exception);
-                }
+                Prompt prompt = Prompt.builder().content(requestContent).build();
+                ChatResponse response = model.call(prompt);
+                String generation = Optional.ofNullable(response)
+                        .map(resp -> resp.getResult())
+                        .map(gen -> gen.getOutput())
+                        .map(output -> output.getText())
+                        .filter(text -> !text.isBlank())
+                        .orElseThrow();
                 if (!validator.test(generation)) {
                     throw new IllegalArgumentException(invalidResponseMessage(operation));
                 }
@@ -251,6 +245,9 @@ public class TextAssistant {
             if (exception instanceof IllegalArgumentException illegalArgumentException) {
                 throw illegalArgumentException;
             }
+            if (exception instanceof RuntimeException runtimeException) {
+                throw new IllegalArgumentException("Palo " + runtimeException.getMessage(), runtimeException);
+            }
             throw new IllegalArgumentException("No se pudo consultar o acceder a la cache de NVIDIA.", exception);
         }
     }
@@ -258,7 +255,7 @@ public class TextAssistant {
     private String invalidResponseMessage(String operation) {
         return switch (operation) {
             case "narrative-chunks-v2" -> "NVIDIA devolvio escenas no validas; no se ha guardado una division parcial.";
-            case "panel-plans-v1" -> "NVIDIA devolvio una propuesta no valida; revisa o vuelve a intentar.";
+            case "image-panel-prompts-v1" -> "NVIDIA devolvio prompts de imagen no validos; no se guardo la propuesta.";
             default -> "NVIDIA devolvio una descripcion no valida; no se ha guardado en cache.";
         };
     }
@@ -327,4 +324,5 @@ public class TextAssistant {
         if (end < value.length() && Character.isHighSurrogate(value.charAt(end - 1))) { end--; }
         return value.substring(0, end);
     }
+
 }

@@ -55,14 +55,21 @@ class WebFlowTest {
                 assertThat(environment.getProperty("spring.jpa.hibernate.ddl-auto")).isEqualTo("validate");
                 assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM DATABASECHANGELOG WHERE ID = ?", Integer.class,
                                 "001-initial-schema")).isEqualTo(1);
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM DATABASECHANGELOG WHERE ID = ?", Integer.class,
+                                "005-panel-plan-confirmation")).isEqualTo(1);
                 migrations.afterPropertiesSet();
                 assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM DATABASECHANGELOG WHERE ID = ?", Integer.class,
                                 "001-initial-schema")).isEqualTo(1);
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM DATABASECHANGELOG WHERE ID = ?", Integer.class,
+                                "005-panel-plan-confirmation")).isEqualTo(1);
         }
 
     @BeforeEach void session() throws Exception {
         doAnswer(invocation -> Chunking.split(invocation.getArgument(0), invocation.getArgument(1)))
                 .when(text).chunks(anyString(), anyInt(), anyString());
+        doAnswer(invocation -> java.util.stream.IntStream.rangeClosed(1, invocation.getArgument(1))
+                .mapToObj(index -> "Prompt visual de prueba " + index + ": accion, personaje y encuadre.").toList())
+                .when(text).imagePanelPrompts(anyString(), anyInt(), anyString());
         session = (MockHttpSession) mvc.perform(get("/")).andExpect(status().isOk())
                 .andExpect(content().string(containsString("Nueva obra"))).andReturn().getRequest().getSession();
     }
@@ -76,6 +83,18 @@ class WebFlowTest {
                 assertThat(environment.containsProperty("app.image.model")).isTrue();
                 assertThat(environment.getProperty("app.image.model")).isEmpty();
                 assertThat("test-key".equals(environment.getProperty("app.nvidia.api-key"))).isTrue();
+        }
+
+        @Test void panelPageShowsUnavailableInsteadOfOfferingSimulatedImagePrompts() throws Exception {
+                var novel = workflow.createNovel("Sin proveedor", "Aiko entra en el faro.");
+                workflow.proposeChunks(novel.id, 5000, "");
+                workflow.confirmChunks(novel.id);
+                doReturn(false).when(text).imagePanelPromptsAvailable();
+
+                mvc.perform(get("/novels/" + novel.id + "/panels").session(session))
+                                .andExpect(status().isOk())
+                                .andExpect(content().string(containsString("generacion de prompts de imagen no esta disponible")))
+                                .andExpect(content().string(org.hamcrest.Matchers.not(containsString("Generar prompts de imagen"))));
         }
 
         @Test void allScreensAndCompleteHttpWorkflowWithCharacters() throws Exception {
@@ -106,8 +125,11 @@ class WebFlowTest {
         mvc.perform(get(base + "/panels").session(session)).andExpect(status().isOk());
         mvc.perform(form(chunk + "/panels/propose").param("count", "1")).andExpect(status().is3xxRedirection());
         mvc.perform(get(base + "/panels").session(session)).andExpect(status().isOk())
-                .andExpect(content().string(containsString("Propuesta de secuencia")));
-        mvc.perform(form(chunk + "/panels/save").param("descriptions", "Una viajera, tinta negra, primer plano."))
+                .andExpect(content().string(containsString("Prompts para generar imagen")))
+                .andExpect(content().string(containsString("Prompt visual de prueba 1")))
+                .andExpect(content().string(containsString("Regenerar prompts")))
+                .andExpect(content().string(containsString("Regenerar reemplazara la propuesta")));
+        mvc.perform(form(chunk + "/panels/save").param("imagePrompts", "Una viajera, tinta negra, primer plano."))
                 .andExpect(status().is3xxRedirection());
         mvc.perform(form(chunk + "/panels/confirm")).andExpect(status().is3xxRedirection());
         mvc.perform(get(base + "/panels").session(session)).andExpect(status().isOk());
@@ -118,7 +140,7 @@ class WebFlowTest {
                 .andExpect(status().is3xxRedirection());
         long draftId = workflow.drafts(novelId).getFirst().id;
         mvc.perform(get(base + "/studio").session(session)).andExpect(status().isOk())
-                .andExpect(content().string(containsString("Descripcion editable")));
+                .andExpect(content().string(containsString("Prompt final editable")));
         mvc.perform(form(base + "/studio/" + draftId + "/save").param("prompt", "La viajera en el anden, amanecer."))
                 .andExpect(status().is3xxRedirection());
         mvc.perform(form(base + "/studio/" + draftId + "/generate")).andExpect(status().is3xxRedirection());

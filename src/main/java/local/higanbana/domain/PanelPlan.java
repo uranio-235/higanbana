@@ -16,10 +16,10 @@ import java.util.List;
 public class PanelPlan extends Row {
     public Long novelId;
     public Long chunkId;
-    public boolean confirmed;
-    public int panelCount;
-    public String provenance;
-    @ElementCollection @OrderColumn(name = "panel_order") @Column(columnDefinition = "text")
+    @Column(updatable = false) public boolean confirmed;
+    @Column(updatable = false) public int panelCount;
+    @Column(updatable = false) public String provenance;
+    @ElementCollection @OrderColumn(name = "panel_order") @Column(name = "descriptions", columnDefinition = "text")
     @CollectionTable(name = "panel_plan_descriptions", joinColumns = @JoinColumn(name = "panel_plan_id", columnDefinition = "bigint"))
-    public List<String> descriptions = new ArrayList<>();
+    public List<String> imagePrompts = new ArrayList<>();
 }

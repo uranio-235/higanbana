@@ -166,6 +166,9 @@ To return to demo, set `app.text-mode=demo` in the local file and restart.
 - DuckDB's schema is initialized from `src/main/resources/db/duckdb/schema.sql`.
   Hibernate uses PostgreSQL-compatible SQL with automatic DDL disabled; a shared
   sequence generates IDs. H2 and Liquibase remain test-only.
+- Chunk plans store their confirmation as a separate child row. This avoids
+  updating a DuckDB parent row while `chunk_plan_segments` references it; startup
+  copies confirmation state from existing plans into the new marker table.
 - Pending candidate bytes live in DuckDB; rejection removes those bytes.
 - Only approval writes a UUID-named file to `./data/manga`. Configure the path with
   `app.manga-dir` in properties. Normal transaction rollback cleans up a newly written file.
@@ -210,10 +213,10 @@ for tests, Spring AI OpenAI, and Boot test support.
 `./mvnw.cmd clean verify` runs lossless segmentation tests, service state/selection
 tests, a complete seven-screen MockMvc/H2 workflow, DuckDB JPA startup and sequence
 tests, character persistence and orphan removal, prompt snapshots, multipart/CSRF/
-ownership, and H2 test isolation,
-and mock NVIDIA HTTP contract tests, plus DuckDB/H2 cache persistence, expiry,
-cache hits, request-key separation, and invalid-response handling. The verified
-suite passes 57 tests; see `target/surefire-reports` for results. The complete demo workflow was also checked
+ownership, and H2 test isolation, mock NVIDIA HTTP contract tests, DuckDB/H2 cache
+persistence, expiry, cache hits, request-key separation, invalid-response handling,
+and confirmation of chunks against DuckDB. The verified suite passes 58 tests; see
+`target/surefire-reports` for results. The complete demo workflow was also checked
 in a browser: zero reader images before approval and one afterwards. Desktop and
 390 px mobile screenshots were reviewed; all six mobile views had no page-width
 overflow or broken images. The new characters screen and two-panel/character
@@ -226,7 +229,8 @@ These are database checks, not a claim of live NVIDIA/image inference verificati
 ## Code Map
 
 - `src/main/java/local/higanbana/domain`: one JPA entity per file, plus `Chunking`, `Row` and
-  `ReviewState`. `Novel` owns `NovelCharacter` through a bidirectional relationship.
+  `ReviewState`. `Novel` owns `NovelCharacter`; chunk confirmation is an immutable
+  child marker to avoid DuckDB's parent-update/foreign-key constraint.
 - `src/main/java/local/higanbana/application/Workflow.java`: transactional
   application workflow, ownership/state checks, and local approval storage.
 - `src/main/resources/db/duckdb/schema.sql`: active DuckDB tables and indexes.

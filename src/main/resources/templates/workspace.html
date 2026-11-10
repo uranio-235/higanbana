@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/app.css"><link rel="stylesheet" href="/footer.css"><script src="/vendor/htmx.min.js" defer></script><script src="/vendor/lucide.min.js" defer></script><script src="/app.js" defer></script>
 </head>
 <body hx-boost="true" hx-indicator="#busy">
-<header class="topbar"><a class="brand" href="/">Higanbana<span>ESTUDIO DE MANGA</span></a><div class="environment"><span class="dot"></span><span th:text="${view == 'chunks' ? chunkProvenance : textProvenance}"></span><span th:unless="${view == 'chunks'}" class="tag">Imagen DEMO</span></div></header>
+<header class="topbar"><a class="brand" href="/">Higanbana<span>ESTUDIO DE MANGA</span></a><div class="environment"><span class="dot"></span><span th:text="${view == 'chunks' ? chunkProvenance : view == 'panels' ? imagePanelPromptProvenance : textProvenance}"></span><span th:unless="${view == 'chunks' or view == 'panels'}" class="tag">Imagen DEMO</span></div></header>
 <div class="shell">
   <aside class="sidebar">
     <p class="eyebrow">PROYECTO LOCAL</p>
@@ -92,17 +92,19 @@
       <th:block th:if="${selectedChunk != null}">
         <form method="get" class="chunk-picker"><label for="chunkId">Chunk</label><select id="chunkId" name="chunkId"><option th:each="chunk : ${chunks}" th:value="${chunk.id}" th:selected="${chunk.id == selectedChunk.id}" th:text="'Chunk ' + ${chunk.position}"></option></select><button class="secondary icon-button" title="Abrir chunk" aria-label="Abrir chunk"><i data-lucide="arrow-right" aria-hidden="true"></i></button></form>
         <details><summary>Texto original del chunk <span th:text="${#strings.length(selectedChunk.content)} + ' caracteres'"></span></summary><pre class="source-text" th:text="${selectedChunk.content}"></pre></details>
-        <form th:if="${panelPlan == null or !panelPlan.confirmed}" th:action="@{/novels/{id}/chunks/{chunk}/panels/propose(id=${novel.id},chunk=${selectedChunk.id})}" method="post" class="editor-form">
-          <input type="hidden" name="_csrf" th:value="${csrf}"><div class="form-columns"><div><label for="count">Numero de paneles</label><input id="count" type="number" name="count" min="1" max="12" th:value="${panelPlan != null ? panelPlan.panelCount : 3}" required></div><div><label for="panelRevision">Direccion narrativa</label><input id="panelRevision" name="revision" maxlength="1500" placeholder="Encuadres, continuidad, ritmo..."></div></div>
-          <button><i data-lucide="panels-top-left" aria-hidden="true"></i><span th:text="${panelPlan == null ? 'Proponer paneles' : 'Revisar propuesta'}"></span></button>
+        <p class="notice" th:unless="${imagePanelPromptsAvailable}">La generacion de prompts de imagen no esta disponible. Configura NVIDIA y el modelo de texto.</p>
+        <form th:if="${imagePanelPromptsAvailable and (panelPlan == null or !panelPlan.confirmed or panelPlan.provenance != 'Prompts de imagen / NVIDIA')}" th:action="@{/novels/{id}/chunks/{chunk}/panels/propose(id=${novel.id},chunk=${selectedChunk.id})}" method="post" class="editor-form" th:attr="hx-confirm=${panelPlan == null ? null : panelPlan.confirmed ? 'Se actualizaran los prompts de los paneles existentes; los borradores y candidatos guardados no cambiaran. Continuar?' : 'Regenerar reemplazara la propuesta y los prompts guardados de este chunk. Continuar?'}">
+          <input type="hidden" name="_csrf" th:value="${csrf}"><div class="form-columns"><div><label for="count">Numero de paneles</label><input id="count" type="number" name="count" min="1" max="12" th:value="${panelPlan != null ? panelPlan.panelCount : 3}" th:readonly="${panelPlan != null and panelPlan.confirmed}" required></div><div><label for="panelRevision">Direccion narrativa</label><input id="panelRevision" name="revision" maxlength="1500" placeholder="Encuadres, continuidad, ritmo..."></div></div>
+          <button><i data-lucide="panels-top-left" aria-hidden="true"></i><span th:text="${panelPlan == null ? 'Generar prompts de imagen' : panelPlan.confirmed ? 'Regenerar prompts NVIDIA' : 'Regenerar prompts'}"></span></button>
         </form>
         <th:block th:if="${panelPlan != null}">
-          <div class="section-heading"><h2>Propuesta de secuencia</h2><span class="tag" th:text="${panelPlan.provenance}"></span></div>
+          <div class="section-heading"><h2>Prompts para generar imagen</h2><span class="tag" th:text="${panelPlan.provenance}"></span></div>
+          <p class="notice" th:if="${panelPlan.provenance != 'Prompts de imagen / NVIDIA'}" th:text="${panelPlan.confirmed ? 'Estos paneles se confirmaron con prompts demo. Regenera con NVIDIA para actualizar los prompts; los borradores anteriores se conservan.' : 'Esta propuesta viene del modo demo. Regenera los prompts con NVIDIA antes de confirmarlos.'}"></p>
           <form th:action="@{/novels/{id}/chunks/{chunk}/panels/save(id=${novel.id},chunk=${selectedChunk.id})}" method="post" class="editor-form"><input type="hidden" name="_csrf" th:value="${csrf}">
-            <div class="panel-edit" th:each="description,stat : ${panelPlan.descriptions}"><label th:for="'panel-' + ${stat.index}" th:text="'Panel ' + ${stat.count}"></label><textarea th:id="'panel-' + ${stat.index}" name="descriptions" rows="4" maxlength="3000" required th:readonly="${panelPlan.confirmed}" th:text="${description}"></textarea></div>
-            <button th:unless="${panelPlan.confirmed}" class="secondary"><i data-lucide="save" aria-hidden="true"></i> Guardar edicion</button>
+            <div class="panel-edit" th:each="imagePrompt,stat : ${panelPlan.imagePrompts}"><label th:for="'panel-prompt-' + ${stat.index}" th:text="'Prompt de imagen / Panel ' + ${stat.count}"></label><textarea th:id="'panel-prompt-' + ${stat.index}" name="imagePrompts" rows="7" maxlength="1500" required th:readonly="${panelPlan.confirmed}" th:text="${imagePrompt}"></textarea></div>
+            <button th:unless="${panelPlan.confirmed}" class="secondary"><i data-lucide="save" aria-hidden="true"></i> Guardar prompts</button>
           </form>
-          <form th:unless="${panelPlan.confirmed}" th:action="@{/novels/{id}/chunks/{chunk}/panels/confirm(id=${novel.id},chunk=${selectedChunk.id})}" method="post" class="action-bar"><input type="hidden" name="_csrf" th:value="${csrf}"><button><i data-lucide="check" aria-hidden="true"></i> Confirmar paneles guardados</button></form>
+          <form th:if="${!panelPlan.confirmed and panelPlan.provenance == 'Prompts de imagen / NVIDIA'}" th:action="@{/novels/{id}/chunks/{chunk}/panels/confirm(id=${novel.id},chunk=${selectedChunk.id})}" method="post" class="action-bar"><input type="hidden" name="_csrf" th:value="${csrf}"><button><i data-lucide="check" aria-hidden="true"></i> Confirmar prompts guardados</button></form>
           <a th:if="${panelPlan.confirmed}" class="button" th:href="@{/novels/{id}/studio(id=${novel.id})}">Abrir estudio <i data-lucide="arrow-right" aria-hidden="true"></i></a>
         </th:block>
       </th:block>
@@ -112,17 +114,17 @@
       <div class="page-heading"><div><p class="eyebrow">04 / DIRECCION VISUAL</p><h1>Estudio</h1></div><span class="tag">1 o 2 paneles por imagen</span></div>
       <p class="empty" th:if="${#lists.isEmpty(panels)}">No hay paneles confirmados. <a th:href="@{/novels/{id}/panels(id=${novel.id})}">Abrir paneles</a></p>
       <form th:unless="${#lists.isEmpty(panels)}" th:action="@{/novels/{id}/studio(id=${novel.id})}" method="post" class="editor-form" data-panel-selection>
-        <input type="hidden" name="_csrf" th:value="${csrf}"><fieldset><legend>Seleccion narrativa</legend><label class="selection-row" th:each="panel : ${panels}"><input type="checkbox" name="panelIds" th:value="${panel.id}"><span><strong th:text="'Chunk ' + ${panel.chunkPosition} + ' / Panel ' + ${panel.position}"></strong><span th:text="${panel.description}"></span></span></label></fieldset>
+        <input type="hidden" name="_csrf" th:value="${csrf}"><fieldset><legend>Prompts que formaran la imagen</legend><label class="selection-row" th:each="panel : ${panels}"><input type="checkbox" name="panelIds" th:value="${panel.id}"><span><strong th:text="'Chunk ' + ${panel.chunkPosition} + ' / Panel ' + ${panel.position}"></strong><span th:text="${panel.imagePrompt}"></span></span></label></fieldset>
         <p class="selection-count muted" aria-live="polite">0 / 2 seleccionados</p>
         <fieldset th:unless="${#lists.isEmpty(characters)}"><legend>Personajes en escena</legend><label class="selection-row" th:each="character : ${characters}"><input type="checkbox" name="characterIds" th:value="${character.id}"><span><strong th:text="${character.name}"></strong><span th:text="${character.description}"></span></span></label></fieldset>
-        <label for="direction">Direccion visual</label><textarea id="direction" name="direction" rows="2" maxlength="1500" placeholder="Composicion, expresiones, luz..."></textarea>
-        <button data-selection-submit><i data-lucide="pencil-line" aria-hidden="true"></i> Crear descripcion</button>
+        <label for="direction">Ajustes finales opcionales</label><textarea id="direction" name="direction" rows="2" maxlength="1500" placeholder="Ajustar luz, encuadre o composicion sin cambiar la escena..."></textarea>
+        <button data-selection-submit><i data-lucide="pencil-line" aria-hidden="true"></i> Preparar prompt final</button>
       </form>
-      <div class="section-heading"><h2>Descripciones guardadas</h2></div><p th:if="${#lists.isEmpty(drafts)}" class="empty">Ninguna descripcion todavia.</p>
+      <div class="section-heading"><h2>Prompts finales</h2></div><p th:if="${#lists.isEmpty(drafts)}" class="empty">Ningun prompt preparado todavia.</p>
       <article class="draft-row" th:each="draft : ${drafts}"><div class="section-heading"><h3 th:text="'Descripcion #' + ${draft.id}"></h3><span class="tag" th:text="${draft.provenance}"></span></div>
         <details th:if="${!#strings.isEmpty(draft.characterContext)}"><summary>Fichas de personajes guardadas</summary><pre class="source-text" th:text="${draft.characterContext}"></pre></details>
-        <form th:action="@{/novels/{id}/studio/{draft}/save(id=${novel.id},draft=${draft.id})}" method="post"><input type="hidden" name="_csrf" th:value="${csrf}"><label th:for="'prompt-' + ${draft.id}">Descripcion editable</label><textarea th:id="'prompt-' + ${draft.id}" name="prompt" rows="5" maxlength="6000" required th:text="${draft.prompt}"></textarea><button class="secondary"><i data-lucide="save" aria-hidden="true"></i> Guardar descripcion</button></form>
-        <form th:action="@{/novels/{id}/studio/{draft}/generate(id=${novel.id},draft=${draft.id})}" method="post" class="action-bar"><input type="hidden" name="_csrf" th:value="${csrf}"><button><i data-lucide="image-plus" aria-hidden="true"></i> Generar candidato demo guardado</button></form>
+        <form th:action="@{/novels/{id}/studio/{draft}/save(id=${novel.id},draft=${draft.id})}" method="post"><input type="hidden" name="_csrf" th:value="${csrf}"><label th:for="'prompt-' + ${draft.id}">Prompt final editable</label><textarea th:id="'prompt-' + ${draft.id}" name="prompt" rows="7" maxlength="6000" required th:text="${draft.prompt}"></textarea><button class="secondary"><i data-lucide="save" aria-hidden="true"></i> Guardar prompt</button></form>
+        <form th:action="@{/novels/{id}/studio/{draft}/generate(id=${novel.id},draft=${draft.id})}" method="post" class="action-bar"><input type="hidden" name="_csrf" th:value="${csrf}"><button><i data-lucide="image-plus" aria-hidden="true"></i> Enviar prompt al generador</button></form>
       </article>
     </section>
 

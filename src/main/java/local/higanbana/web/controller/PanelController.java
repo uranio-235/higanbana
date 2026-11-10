@@ -24,7 +24,7 @@ public class PanelController {
     @PostMapping("/novels/{novelId}/chunks/{chunkId}/panels/save") public String save(
             @PathVariable long novelId, @PathVariable long chunkId,
             @RequestParam MultiValueMap<String, String> form) {
-        workflow.savePanels(novelId, chunkId, form.get("descriptions"));
+        workflow.savePanelImagePrompts(novelId, chunkId, form.get("imagePrompts"));
         return novel(novelId, "panels?chunkId=" + chunkId);
     }
 

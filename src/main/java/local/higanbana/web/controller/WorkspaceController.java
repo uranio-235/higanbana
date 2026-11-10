@@ -30,6 +30,8 @@ public class WorkspaceController {
         model.addAttribute("textProvenance", workflow.textProvenance());
         model.addAttribute("chunkProvenance", workflow.chunkProvenance());
         model.addAttribute("chunkingAvailable", workflow.chunkingAvailable());
+        model.addAttribute("imagePanelPromptsAvailable", workflow.imagePanelPromptsAvailable());
+        model.addAttribute("imagePanelPromptProvenance", workflow.imagePanelPromptProvenance());
     }
 
     @GetMapping("/") public String home(Model model) {

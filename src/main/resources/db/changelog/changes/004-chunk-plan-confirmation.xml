@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
+    <changeSet id="004-chunk-plan-confirmation" author="higanbana" dbms="h2">
+        <createTable tableName="chunk_plan_confirmation">
+            <column name="chunk_plan_id" type="BIGINT"><constraints primaryKey="true" nullable="false" references="chunk_plan(id)" foreignKeyName="fk_chunk_plan_confirmation"/></column>
+        </createTable>
+        <sql>INSERT INTO chunk_plan_confirmation (chunk_plan_id) SELECT id FROM chunk_plan WHERE confirmed = TRUE</sql>
+    </changeSet>
+</databaseChangeLog>

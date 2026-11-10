@@ -29,6 +29,15 @@
 - Database: persistent DuckDB (`./higanbana.duckdb`), DuckDB JDBC 2.0.0.1 and
   `db/duckdb/schema.sql`; Hibernate uses PostgreSQL-compatible SQL with automatic
   DDL disabled. H2/Liquibase remain test-only via the test profile.
+- Confirmed chunk plans use the child table `chunk_plan_confirmation` rather than
+  updating the referenced plan row; startup migrates existing `confirmed=true`
+  values into this table to accommodate DuckDB FK update restrictions.
+- Panel plan confirmation uses `panel_plan_confirmation` for the same DuckDB FK
+  limitation. Startup backfills legacy confirmations and their provenance. Editing
+  prompts touches collection rows only; regenerating an unconfirmed proposal
+  replaces its parent, while regenerating a confirmed legacy demo plan updates
+  panel prompts and confirmation provenance without changing panel IDs or saved
+  studio/candidate snapshots.
 - AI response cache uses `ai_response_cache` in DuckDB, keyed by SHA-256 of the
   operation/provider/model/prompt version/generation settings and exact final
   request. Only validated successful output is stored; default TTL is 30 days.
@@ -62,10 +71,10 @@ All mutation routes require a session CSRF `_csrf` form field. Open `/` first.
 | POST | `/novels/{n}/chunks/propose` | optional `revision`; analysis window is internal configuration |
 | POST | `/novels/{n}/chunks/confirm` | Confirm saved segments idempotently |
 | GET | `/novels/{n}/panels?chunkId={c}` | Panel negotiation for a chunk |
-| POST | `/novels/{n}/chunks/{c}/panels/propose` | `count`, optional `revision` |
-| POST | `/novels/{n}/chunks/{c}/panels/save` | Repeated `descriptions` fields |
-| POST | `/novels/{n}/chunks/{c}/panels/confirm` | Confirm saved panel plan |
-| GET | `/novels/{n}/studio` | Select 1/2 panels, edit drafts |
+| POST | `/novels/{n}/chunks/{c}/panels/propose` | NVIDIA generates `count` independent image prompts from the chunk; optional `revision` |
+| POST | `/novels/{n}/chunks/{c}/panels/save` | Repeated editable `imagePrompts` fields |
+| POST | `/novels/{n}/chunks/{c}/panels/confirm` | Confirm and persist image prompts on panels |
+| GET | `/novels/{n}/studio` | Select 1/2 confirmed image prompts, add cast/direction, edit final prompt |
 | POST | `/novels/{n}/studio` | Repeated `panelIds`, optional `characterIds` and `direction` |
 | POST | `/novels/{n}/studio/{d}/save` | `prompt` |
 | POST | `/novels/{n}/studio/{d}/generate` | Candidate from saved prompt |
@@ -80,17 +89,22 @@ All mutation routes require a session CSRF `_csrf` form field. Open `/` first.
 
 ## Verification
 
-- Tests: 57 passing with DuckDB/H2. Complete
+- Tests: 65 passing with DuckDB/H2. Complete
   seven-screen HTTP flow, invalid UTF-8, CSRF,
   ownership, 1/2-panel selection, state guards, narrative ordering, snapshots,
   idempotent approval, approved-only disk storage, DuckDB/H2 cache persistence,
-  expiration, exact-request hits, key separation, and malformed-response handling covered.
+  expiration, exact-request hits, key separation, malformed-response handling,
+  DuckDB chunk confirmation/idempotence, and image-prompt panel-to-candidate
+  propagation, DuckDB prompt save/regenerate/confirm, legacy demo recovery, and
+  idempotent panel confirmation covered.
 - H2 tests execute the test Liquibase changelog. A separate DuckDB test verifies
   JPA persistence and sequence generation.
 - Character FK persistence, orphan removal, input validation, cross-novel guards,
   escaped HTML, context limits, and immutable draft/candidate snapshots covered.
 - Desktop browser character create/edit and two-panel plus character selection
-  passed. The candidate contains the selected visual sheet and images render.
+  passed previously. New Panel prompt rendering and legacy demo warning are covered
+  in MockMvc; the shared debug app has not been restarted for the DuckDB fix and
+  still shows legacy demo data. Live NVIDIA prompt generation remains unverified.
 - Official Maven distribution SHA-512 verified; wrapper pins SHA-256.
 - Versions: Boot 3.5.7; Spring AI 1.1.0; Maven 3.9.11; wrapper plugin 3.3.4;
   DuckDB JDBC 2.0.0.1; Liquibase 4.31.1 and H2

@@ -43,6 +43,8 @@ public class Workflow {
     public String textProvenance() { return text.provenance(); }
     public String chunkProvenance() { return text.chunkProvenance(); }
     public boolean chunkingAvailable() { return text.chunkingAvailable(); }
+    public boolean imagePanelPromptsAvailable() { return text.imagePanelPromptsAvailable(); }
+    public String imagePanelPromptProvenance() { return text.imagePanelPromptProvenance(); }
 
     public List<Novel> novels() {
         return em.createQuery("from Novel order by id desc", Novel.class).getResultList();
@@ -65,8 +67,10 @@ public class Workflow {
         var plans = em.createQuery("from ChunkPlan where novelId=:novel", ChunkPlan.class)
                 .setParameter("novel", novelId).getResultList();
         if (plans.isEmpty()) { return null; }
-        plans.getFirst().segments.size();
-        return plans.getFirst();
+        ChunkPlan plan = plans.getFirst();
+        plan.segments.size();
+        plan.confirmed = em.find(ChunkPlanConfirmation.class, plan.id) != null;
+        return plan;
     }
 
     public List<NovelCharacter> characters(long novelId) {
@@ -157,6 +161,7 @@ public class Workflow {
             chunk.content = plan.segments.get(index);
             em.persist(chunk);
         }
+        em.persist(new ChunkPlanConfirmation(plan.id));
         plan.confirmed = true;
     }
 
@@ -165,8 +170,14 @@ public class Workflow {
         var plans = em.createQuery("from PanelPlan where chunkId=:chunk", PanelPlan.class)
                 .setParameter("chunk", chunkId).getResultList();
         if (plans.isEmpty()) { return null; }
-        plans.getFirst().descriptions.size();
-        return plans.getFirst();
+        PanelPlan plan = plans.getFirst();
+        plan.imagePrompts.size();
+        PanelPlanConfirmation confirmation = em.find(PanelPlanConfirmation.class, plan.id);
+        plan.confirmed = confirmation != null;
+        if (confirmation != null && confirmation.provenance != null) {
+            plan.provenance = confirmation.provenance;
+        }
+        return plan;
     }
 
     public PanelPlan proposePanels(long novelId, long chunkId, int count, String revision) {
@@ -175,29 +186,46 @@ public class Workflow {
         if (count < 1 || count > 12) { fail("Elige de 1 a 12 paneles."); }
         revision(revision);
         PanelPlan plan = panelPlan(novelId, chunkId);
-        if (plan != null && plan.confirmed) { fail("Los paneles ya estan confirmados; se conserva el trabajo posterior."); }
-        List<String> descriptions = text.panels(chunk.content, count, revision);
-        validateDescriptions(descriptions, count);
-        if (plan == null) {
-            plan = new PanelPlan();
-            plan.novelId = novelId;
-            plan.chunkId = chunkId;
-            em.persist(plan);
+        if (plan != null && plan.confirmed && count != plan.panelCount) {
+            fail("El plan esta confirmado; al regenerar se conserva el numero de paneles.");
         }
+        List<String> imagePrompts = text.imagePanelPrompts(chunk.content, count, revision);
+        validateImagePrompts(imagePrompts, count);
+        if (plan != null && plan.confirmed) {
+            List<Panel> savedPanels = em.createQuery("from Panel where chunkId=:chunk order by position", Panel.class)
+                    .setParameter("chunk", chunkId).getResultList();
+            if (savedPanels.size() != count) { fail("El plan confirmado no coincide con los paneles guardados."); }
+            for (int index = 0; index < count; index++) {
+                savedPanels.get(index).imagePrompt = imagePrompts.get(index);
+            }
+            plan.imagePrompts.clear();
+            plan.imagePrompts.addAll(imagePrompts);
+            PanelPlanConfirmation confirmation = em.find(PanelPlanConfirmation.class, plan.id);
+            if (confirmation == null) { fail("No se encontro la confirmacion del plan de paneles."); }
+            confirmation.provenance = text.imagePanelPromptProvenance();
+            return plan;
+        }
+        if (plan != null) {
+            em.remove(plan);
+            em.flush();
+        }
+        plan = new PanelPlan();
+        plan.novelId = novelId;
+        plan.chunkId = chunkId;
         plan.panelCount = count;
-        plan.provenance = text.provenance();
-        plan.descriptions.clear();
-        plan.descriptions.addAll(descriptions);
+        plan.provenance = text.imagePanelPromptProvenance();
+        plan.imagePrompts.addAll(imagePrompts);
+        em.persist(plan);
         return plan;
     }
 
-    public void savePanels(long novelId, long chunkId, List<String> descriptions) {
+    public void savePanelImagePrompts(long novelId, long chunkId, List<String> imagePrompts) {
         mutableNovel(novelId);
         PanelPlan plan = panelPlan(novelId, chunkId);
-        if (plan == null || plan.confirmed) { fail("No hay una propuesta editable."); }
-        validateDescriptions(descriptions, plan.panelCount);
-        plan.descriptions.clear();
-        plan.descriptions.addAll(descriptions);
+        if (plan == null || plan.confirmed) { fail("No hay prompts de imagen editables."); }
+        validateImagePrompts(imagePrompts, plan.panelCount);
+        plan.imagePrompts.clear();
+        plan.imagePrompts.addAll(imagePrompts);
     }
 
     public void confirmPanels(long novelId, long chunkId) {
@@ -206,17 +234,20 @@ public class Workflow {
         PanelPlan plan = panelPlan(novelId, chunkId);
         if (plan == null) { fail("Primero solicita una propuesta de paneles."); }
         if (plan.confirmed) { return; }
-        validateDescriptions(plan.descriptions, plan.panelCount);
-        for (int index = 0; index < plan.descriptions.size(); index++) {
+        if (!"Prompts de imagen / NVIDIA".equals(plan.provenance)) {
+            fail("Esta propuesta no fue generada por NVIDIA. Regenera los prompts antes de confirmarla.");
+        }
+        validateImagePrompts(plan.imagePrompts, plan.panelCount);
+        for (int index = 0; index < plan.imagePrompts.size(); index++) {
             Panel panel = new Panel();
             panel.novelId = novelId;
             panel.chunkId = chunkId;
             panel.chunkPosition = chunk.position;
             panel.position = index + 1;
-            panel.description = plan.descriptions.get(index);
+            panel.imagePrompt = plan.imagePrompts.get(index);
             em.persist(panel);
         }
-        plan.confirmed = true;
+        em.persist(new PanelPlanConfirmation(plan.id, plan.provenance));
     }
 
     public List<Panel> panels(long novelId) {
@@ -252,9 +283,14 @@ public class Workflow {
             .map(character -> character.name + ": " + character.description).toList();
         String characterContext = characterDescriptions.isEmpty() ? "" : "Personajes:\n" + String.join("\n", characterDescriptions);
         if (characterContext.length() > 3000) { fail("Las fichas seleccionadas superan 3000 caracteres. Selecciona menos personajes."); }
-        String context = characterContext + "\n" + String.join("\n", selected.stream().map(panel -> panel.description).toList());
-        validText(context, 8000, "Contexto de paneles y personajes; reduce la seleccion");
-        String prompt = text.describe(context, direction);
+        List<String> selectedPrompts = selected.stream().map(panel -> panel.imagePrompt).toList();
+        selectedPrompts.forEach(prompt -> validText(prompt, 1500, "Prompt de imagen del panel"));
+        String prompt = selectedPrompts.size() == 1
+            ? selectedPrompts.getFirst()
+            : "Crear una sola imagen manga con exactamente dos viñetas distintas, en el orden narrativo indicado. "
+                + "Mantener cada acción en su propia viñeta, sin mezclarlas.\n\n"
+                + "Viñeta 1:\n" + selectedPrompts.getFirst() + "\n\nViñeta 2:\n" + selectedPrompts.get(1);
+        if (!direction.isBlank()) { prompt += "\n\nDireccion visual adicional: " + direction; }
         validText(prompt, 6000, "Descripcion");
         StudioDraft draft = new StudioDraft();
         draft.novelId = novelId;
@@ -263,7 +299,7 @@ public class Workflow {
         draft.narrativeOrder = selected.getFirst().chunkPosition * 100 + selected.getFirst().position;
         draft.prompt = prompt;
         draft.characterContext = characterContext;
-        draft.provenance = text.provenance();
+        draft.provenance = "Prompts de panel / " + text.imagePanelPromptProvenance();
         em.persist(draft);
         return draft;
     }
@@ -422,9 +458,11 @@ public class Workflow {
         if (value == null || value.length() > 1500) { fail("La revision admite hasta 1500 caracteres."); }
     }
 
-    private void validateDescriptions(List<String> descriptions, int count) {
-        if (descriptions == null || descriptions.size() != count) { fail("La propuesta debe contener exactamente " + count + " paneles."); }
-        for (String description : descriptions) { validText(description, 3000, "Descripcion del panel"); }
+    private void validateImagePrompts(List<String> imagePrompts, int count) {
+        if (imagePrompts == null || imagePrompts.size() != count) {
+            fail("La propuesta debe contener exactamente " + count + " prompts de imagen.");
+        }
+        for (String imagePrompt : imagePrompts) { validText(imagePrompt, 1500, "Prompt de imagen"); }
     }
 
     private void validText(String value, int max, String label) {

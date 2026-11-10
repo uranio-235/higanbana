@@ -12,5 +12,5 @@ public class Panel extends Row {
     public Long chunkId;
     public int chunkPosition;
     public int position;
-    @Column(columnDefinition = "text") public String description;
+    @Column(name = "description", columnDefinition = "text") public String imagePrompt;
 }

@@ -16,7 +16,7 @@ import java.util.List;
 public class ChunkPlan extends Row {
     public Long novelId;
     public int chunkLimit;
-    public boolean confirmed;
+    @Column(updatable = false) public boolean confirmed;
     @Column(columnDefinition = "text") public String advice;
     @ElementCollection @OrderColumn(name = "segment_order") @Column(columnDefinition = "text")
     @CollectionTable(name = "chunk_plan_segments", joinColumns = @JoinColumn(name = "chunk_plan_id", columnDefinition = "bigint"))

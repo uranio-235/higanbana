@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
+    <changeSet id="005-panel-plan-confirmation" author="higanbana">
+        <createTable tableName="panel_plan_confirmation">
+            <column name="panel_plan_id" type="BIGINT">
+                <constraints primaryKey="true" nullable="false" references="panel_plan(id)"
+                             foreignKeyName="fk_panel_plan_confirmation"/>
+            </column>
+        </createTable>
+        <sql>INSERT INTO panel_plan_confirmation (panel_plan_id) SELECT id FROM panel_plan WHERE confirmed = TRUE</sql>
+    </changeSet>
+</databaseChangeLog>

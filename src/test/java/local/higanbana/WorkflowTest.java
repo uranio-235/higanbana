@@ -37,6 +37,9 @@ class WorkflowTest {
     @BeforeEach void stubChunkProviderOnlyInTests() {
         doAnswer(invocation -> Chunking.split(invocation.getArgument(0), invocation.getArgument(1)))
                 .when(text).chunks(anyString(), anyInt(), anyString());
+        doAnswer(invocation -> java.util.stream.IntStream.rangeClosed(1, invocation.getArgument(1))
+            .mapToObj(index -> "Prompt visual de prueba " + index + ": mantener la escena y su encuadre.").toList())
+            .when(text).imagePanelPrompts(anyString(), anyInt(), anyString());
     }
 
     @Test void failedNarrativeRevisionKeepsThePreviousProposal() {
@@ -91,7 +94,8 @@ class WorkflowTest {
         workflow.addCharacter(novel.id, "Rin", "Sombrero verde.");
         Long panelId = workflow.panels(novel.id).getFirst().id;
         StudioDraft draft = workflow.createDraft(novel.id, List.of(panelId), "", List.of(selected.id));
-        assertThat(draft.prompt).contains("Aiko", "Ojos grises y abrigo rojo.").doesNotContain("Sombrero verde");
+        assertThat(draft.prompt).contains("Prompt visual de prueba 1");
+        assertThat(draft.characterContext).contains("Aiko", "Ojos grises y abrigo rojo.").doesNotContain("Sombrero verde");
         workflow.saveDraft(novel.id, draft.id, "Primer plano al amanecer.");
         workflow.updateCharacter(novel.id, selected.id, "Aiko", "Ahora lleva abrigo azul.");
         workflow.deleteCharacter(novel.id, selected.id);
@@ -99,6 +103,39 @@ class WorkflowTest {
         Candidate candidate = workflow.generate(novel.id, draft.id);
         assertThat(candidate.prompt).contains("Primer plano al amanecer.", "Aiko", "Ojos grises y abrigo rojo.")
                 .doesNotContain("abrigo azul", "Sombrero verde");
+    }
+
+    @Test void confirmedImagePanelPromptIsThePromptSentToImageGeneration() {
+        Novel novel = workflow.createNovel("Prompt de panel", "Aiko abre la puerta del faro.");
+        workflow.proposeChunks(novel.id, 5000, "");
+        workflow.confirmChunks(novel.id);
+        Chunk chunk = workflow.chunks(novel.id).getFirst();
+        String generated = "Aiko abre una puerta de madera bajo la lluvia, plano medio, faro al fondo.";
+        doReturn(List.of(generated)).when(text).imagePanelPrompts(chunk.content, 1, "Plano medio");
+        workflow.proposePanels(novel.id, chunk.id, 1, "Plano medio");
+        PanelPlan plan = workflow.panelPlan(novel.id, chunk.id);
+        assertThat(plan.imagePrompts).containsExactly(generated);
+        workflow.confirmPanels(novel.id, chunk.id);
+        Panel panel = workflow.panels(novel.id).getFirst();
+        assertThat(panel.imagePrompt).isEqualTo(generated);
+
+        StudioDraft draft = workflow.createDraft(novel.id, List.of(panel.id), "Luz fria");
+        assertThat(draft.prompt).contains(generated, "Luz fria");
+        Candidate candidate = workflow.generate(novel.id, draft.id);
+        assertThat(candidate.prompt).contains(generated, "Luz fria");
+    }
+
+    @Test void demoPanelPromptsCannotBeConfirmedAsRealImagePrompts() {
+        Novel novel = workflow.createNovel("Propuesta antigua", "Aiko abre el faro.");
+        workflow.proposeChunks(novel.id, 5000, "");
+        workflow.confirmChunks(novel.id);
+        Chunk chunk = workflow.chunks(novel.id).getFirst();
+        doReturn("DEMO local - sin IA").when(text).imagePanelPromptProvenance();
+        workflow.proposePanels(novel.id, chunk.id, 1, "");
+
+        assertThatIllegalArgumentException().isThrownBy(() -> workflow.confirmPanels(novel.id, chunk.id))
+                .withMessageContaining("Regenera los prompts");
+        assertThat(workflow.panels(novel.id)).isEmpty();
     }
 
     @Test void selectedCharacterContextIsBoundedWithoutSilentTruncation() {
