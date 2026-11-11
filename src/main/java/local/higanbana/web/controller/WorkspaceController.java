@@ -45,6 +45,7 @@ public class WorkspaceController {
         String source = input.source();
         if (file != null && !file.isEmpty()) {
             if (source != null && !source.isBlank()) { throw new IllegalArgumentException("Pega texto o sube un archivo, no ambos."); }
+            if (file.getSize() > 2_000_000) { throw new IllegalArgumentException("El archivo de texto supera el limite de 2 MB."); }
             if (file.getOriginalFilename() == null || !file.getOriginalFilename().toLowerCase(java.util.Locale.ROOT).endsWith(".txt")) {
                 throw new IllegalArgumentException("Solo se admiten archivos .txt UTF-8.");
             }

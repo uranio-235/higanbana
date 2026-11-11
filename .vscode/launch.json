@@ -9,6 +9,13 @@
             "cwd": "${workspaceFolder}",
             "vmArgs": "-Djavax.net.ssl.trustStoreType=Windows-ROOT -Djavax.net.ssl.trustStore=NONE",
             "console": "integratedTerminal"
+        },
+        {
+            "type": "java",
+            "name": "Attach to Higanbana (localhost:60316)",
+            "request": "attach",
+            "hostName": "localhost",
+            "port": 60316
         }
     ]
 }

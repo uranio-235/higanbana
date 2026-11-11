@@ -18,6 +18,11 @@ final class InMemoryAiResponseCache implements AiResponseCache {
     }
 
     @Override
+    public void evict(String key) {
+        entries.remove(key);
+    }
+
+    @Override
     public void store(String key, String operation, String provider, String model, String promptVersion,
                       String response, Duration ttl) {
         if (!ttl.isNegative() && !ttl.isZero()) {

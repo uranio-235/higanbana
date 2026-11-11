@@ -24,8 +24,29 @@
   cross-cutting web configuration. Public route paths are unchanged.
 - Novel characters use a bidirectional OneToMany/ManyToOne foreign-key relation.
   The studio stores selected sheet snapshots and passes them to text/image prompts.
-- Image boundary: `ImageProvider.java`; replace `DemoImageProvider` only after a
-  real provider is selected/verified. NVIDIA text never enables real images.
+- Images are generated outside the application. Studio copies the editable prompt
+  together with the selected character snapshots and accepts a user-uploaded PNG
+  or JPEG (up to 20 MB, 40 megapixels) as a candidate. Images are decoded and
+  re-encoded; candidate provenance identifies them as user uploads. Historical
+  demo candidates retain their original provenance. NVIDIA generates panel text,
+  not images.
+- Panel prompts request concrete visual details from the source along with
+  monochrome manga linework and screentones. New Studio drafts include the full
+  original chunk as reference, the chosen panel prompts in narrative order and
+  manga composition rules. Any number of the chunk's existing panels can be
+  selected; panel planning currently allows up to 12 per chunk. Existing saved
+  drafts are not rewritten.
+- Studio draft panel IDs are stored in `studio_draft_panels`; older drafts fall
+  back to their first/second panel columns. Approval checks every associated
+  panel, including for previously approved images.
+- Deleting a Studio draft preserves each related candidate's prompt and its
+  complete panel associations in `candidate_panels`; pending and approved
+  images remain available and their review rules remain unchanged.
+- Studio final prompts are generated with NVIDIA using the selected panel
+  prompts, source chunk and character snapshots. Each new draft stores its exact
+  response cache key. Deletion evicts that response in the same transaction;
+  creating the same draft afterwards requests a fresh response. Older drafts
+  were assembled locally and have no Studio response cache key to evict.
 - Database: persistent DuckDB (`./higanbana.duckdb`), DuckDB JDBC 2.0.0.1 and
   `db/duckdb/schema.sql`; Hibernate uses PostgreSQL-compatible SQL with automatic
   DDL disabled. H2/Liquibase remain test-only via the test profile.
@@ -51,8 +72,14 @@
   Enhancement = optional NVIDIA text. No external service needed for demo.
 - NVIDIA config: properties `app.nvidia.api-key`, `app.text.model`, `app.nvidia.base-url` (base excludes
   `/v1`, default `https://integrate.api.nvidia.com`). Spring AI appends
-  `/v1/chat/completions`. Mock HTTP contract tested; actual model availability and
-  live inference NOT tested. Do not label mock output as live provider output.
+  `/v1/chat/completions`. Mock HTTP contract tests cover failures and caching;
+  live model availability can change. Do not label mock output as live provider output.
+- The configured default text model is `nvidia/nemotron-3.5-lightning-30b-a3b`.
+  Its NVIDIA request explicitly sets `reasoning_effort=none` to preserve the
+  output token budget for structured responses; other models are not altered.
+  Each uncached Studio generation uses a new sampling seed; cache hits reuse the
+  prior response until its draft is deleted. A different seed does not guarantee
+  that a model will produce different text.
 
 ## Route Inventory
 
@@ -74,17 +101,17 @@ All mutation routes require a session CSRF `_csrf` form field. Open `/` first.
 | POST | `/novels/{n}/chunks/{c}/panels/propose` | NVIDIA generates `count` independent image prompts from the chunk; optional `revision` |
 | POST | `/novels/{n}/chunks/{c}/panels/save` | Repeated editable `imagePrompts` fields |
 | POST | `/novels/{n}/chunks/{c}/panels/confirm` | Confirm and persist image prompts on panels |
-| GET | `/novels/{n}/studio` | Select 1/2 confirmed image prompts, add cast/direction, edit final prompt |
+| GET | `/novels/{n}/studio` | Select confirmed image prompts from one chunk, add cast/direction, edit final prompt |
 | POST | `/novels/{n}/studio` | Repeated `panelIds`, optional `characterIds` and `direction` |
 | POST | `/novels/{n}/studio/{d}/save` | `prompt` |
-| POST | `/novels/{n}/studio/{d}/generate` | Candidate from saved prompt |
+| POST | `/novels/{n}/studio/{d}/delete` | Delete the description while preserving associated candidates |
+| POST | `/novels/{n}/studio/{d}/upload` | Multipart `prompt` and `image`; save prompt and create a review candidate atomically |
 | GET | `/novels/{n}/generation` | Pending/approved/rejected candidates |
 | POST | `/novels/{n}/candidates/{c}/approve` | Idempotent approval, file write |
 | POST | `/novels/{n}/candidates/{c}/reject` | Reject pending candidate |
 | GET | `/novels/{n}/candidates/{c}/image` | Pending/approved image; rejected fails |
 | GET | `/novels/{n}/reader` | Approved entries in narrative order |
 | GET | `/novels/{n}/entries/{e}/image` | Approved local image/download |
-| GET | `/demo.svg` | Watermarked original demo illustration |
 | GET | `/health` | Health probe |
 
 ## Verification
@@ -126,7 +153,7 @@ All mutation routes require a session CSRF `_csrf` form field. Open `/` first.
 ## Remaining Manual Review
 
 Configure and test actual NVIDIA inference only with privately supplied credentials.
-Select a real image provider before replacing the explicit demo adapter. Stop a
+Generate images externally and upload them through Studio. Stop a
 running JAR before rebuilding on Windows to avoid locked/replaced archive errors.
 Do not provision cloud resources. Update `db/duckdb/schema.sql` for DuckDB schema
 experiments; the old Liquibase changelog is retained for H2 tests. DuckDB VSS/vector

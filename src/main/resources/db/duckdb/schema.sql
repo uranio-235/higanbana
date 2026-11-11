@@ -126,6 +126,22 @@ CREATE TABLE IF NOT EXISTS candidate (
     provenance VARCHAR(255)
 );
 
+ALTER TABLE studio_draft ADD COLUMN IF NOT EXISTS ai_cache_key VARCHAR(255);
+
+CREATE TABLE IF NOT EXISTS studio_draft_panels (
+    studio_draft_id BIGINT NOT NULL,
+    panel_order INTEGER NOT NULL,
+    panel_id BIGINT NOT NULL,
+    PRIMARY KEY (studio_draft_id, panel_order)
+);
+
+CREATE TABLE IF NOT EXISTS candidate_panels (
+    candidate_id BIGINT NOT NULL,
+    panel_order INTEGER NOT NULL,
+    panel_id BIGINT NOT NULL,
+    PRIMARY KEY (candidate_id, panel_order)
+);
+
 CREATE TABLE IF NOT EXISTS manga_entry (
     id BIGINT PRIMARY KEY,
     version BIGINT NOT NULL,

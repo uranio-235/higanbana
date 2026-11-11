@@ -42,6 +42,52 @@ class DuckDbPersistenceTest {
     @Autowired EntityManager em;
     @MockitoSpyBean TextAssistant text;
 
+    @org.junit.jupiter.api.BeforeEach
+    void stubStudioPrompt() {
+        doReturn(new local.higanbana.domain.ai.CachedText("Propuesta de prueba.", "test-key"))
+                .when(text).studioPrompt(org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    @Transactional
+    void uploadedImagesAndPromptSnapshotsPersistInDuckDb() throws Exception {
+        Novel novel = workflow.createNovel("Imagen externa", "Aiko entra al faro.");
+        Chunk chunk = new Chunk();
+        chunk.novelId = novel.id;
+        chunk.position = 1;
+        chunk.content = novel.source;
+        em.persist(chunk);
+        Panel panel = new Panel();
+        panel.novelId = novel.id;
+        panel.chunkId = chunk.id;
+        panel.chunkPosition = 1;
+        panel.position = 1;
+        panel.imagePrompt = "Aiko entra al faro.";
+        em.persist(panel);
+        em.flush();
+        var draft = workflow.createDraft(novel.id, java.util.List.of(panel.id), "");
+        var output = new java.io.ByteArrayOutputStream();
+        var image = new java.awt.image.BufferedImage(1200, 900, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        var random = new java.util.Random(1);
+        for (int row = 0; row < image.getHeight(); row++) {
+            for (int column = 0; column < image.getWidth(); column++) {
+                image.setRGB(column, row, random.nextInt(0x1000000));
+            }
+        }
+        javax.imageio.ImageIO.write(image, "png", output);
+        assertThat(output.size()).isGreaterThan(2_000_000);
+        var first = workflow.uploadImage(novel.id, draft.id, output.toByteArray());
+        em.flush();
+        em.clear();
+        workflow.saveDraft(novel.id, draft.id, "Una vista nueva del faro.");
+        var second = workflow.uploadImage(novel.id, draft.id, output.toByteArray());
+        em.flush();
+        em.clear();
+        assertThat(workflow.candidate(novel.id, first.id).prompt).contains("manga japones en blanco y negro", "Aiko entra al faro.");
+        assertThat(workflow.candidate(novel.id, second.id).prompt).isEqualTo("Una vista nueva del faro.");
+        assertThat(workflow.candidateImage(novel.id, second.id).mediaType()).isEqualTo("image/png");
+    }
+
     @Test void jpaCreatesAndReadsRowsUsingDuckDbSequence() throws Exception {
         try (var connection = dataSource.getConnection()) {
             assertThat(connection.getMetaData().getDatabaseProductName()).isEqualTo("DuckDB");
@@ -52,6 +98,127 @@ class DuckDbPersistenceTest {
         assertThat(workflow.novel(novel.id).source).isEqualTo("Una escena junto al lago.");
     }
 
+    @Test
+    @Transactional
+    void deletingDraftEvictsOnlyItsStudioResponse() {
+        Novel novel = workflow.createNovel("Cache de estudio", "Una ventana bajo la lluvia.");
+        Chunk chunk = new Chunk();
+        chunk.novelId = novel.id;
+        chunk.position = 1;
+        chunk.content = novel.source;
+        em.persist(chunk);
+        Panel panel = new Panel();
+        panel.novelId = novel.id;
+        panel.chunkId = chunk.id;
+        panel.chunkPosition = 1;
+        panel.position = 1;
+        panel.imagePrompt = "Una ventana bajo la lluvia.";
+        em.persist(panel);
+        var draft = workflow.createDraft(novel.id, java.util.List.of(panel.id), "");
+        cache.store(draft.aiCacheKey, "studio-image-prompt-v1", "https://provider.test", "model", "v1", "Respuesta", Duration.ofDays(1));
+        cache.store("other-key", "studio-image-prompt-v1", "https://provider.test", "model", "v1", "Otra", Duration.ofDays(1));
+        em.flush();
+        em.clear();
+        workflow.deleteDraft(novel.id, draft.id);
+        em.flush();
+        assertThat(cache.find("test-key")).isEmpty();
+        assertThat(cache.find("other-key")).contains("Otra");
+        assertThat(workflow.drafts(novel.id)).isEmpty();
+    }
+
+        @Test
+        @Transactional
+        void deletingAiDraftForcesARealProviderRequestNextTime() throws Exception {
+        var builder = org.springframework.web.client.RestClient.builder();
+        var server = org.springframework.test.web.client.MockRestServiceServer.bindTo(builder).build();
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        String firstResponse = mapper.writeValueAsString(java.util.Map.of("id", "first", "object", "chat.completion", "created", 1,
+            "model", "test-model", "choices", java.util.List.of(java.util.Map.of("index", 0, "finish_reason", "stop",
+            "message", java.util.Map.of("role", "assistant", "content", "{\"prompt\":\"Primera propuesta.\"}")))));
+        String secondResponse = mapper.writeValueAsString(java.util.Map.of("id", "second", "object", "chat.completion", "created", 1,
+            "model", "test-model", "choices", java.util.List.of(java.util.Map.of("index", 0, "finish_reason", "stop",
+            "message", java.util.Map.of("role", "assistant", "content", "{\"prompt\":\"Segunda propuesta.\"}")))));
+        server.expect(org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo("https://provider.test/v1/chat/completions"))
+            .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess(firstResponse, org.springframework.http.MediaType.APPLICATION_JSON));
+        server.expect(org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo("https://provider.test/v1/chat/completions"))
+            .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess(secondResponse, org.springframework.http.MediaType.APPLICATION_JSON));
+        var realAssistant = new TextAssistant("nvidia", "https://provider.test", "test-key", "test-model", mapper, builder, cache, Duration.ofDays(1));
+        org.mockito.Mockito.doAnswer(invocation -> realAssistant.studioPrompt(invocation.getArgument(0)))
+            .when(text).studioPrompt(org.mockito.ArgumentMatchers.anyString());
+
+        Novel novel = workflow.createNovel("Regenerar", "Una ventana bajo la lluvia.");
+        Chunk chunk = new Chunk();
+        chunk.novelId = novel.id;
+        chunk.position = 1;
+        chunk.content = novel.source;
+        em.persist(chunk);
+        Panel panel = new Panel();
+        panel.novelId = novel.id;
+        panel.chunkId = chunk.id;
+        panel.chunkPosition = 1;
+        panel.position = 1;
+        panel.imagePrompt = "La ventana bajo la lluvia.";
+        em.persist(panel);
+
+        var first = workflow.createDraft(novel.id, java.util.List.of(panel.id), "");
+        var same = workflow.createDraft(novel.id, java.util.List.of(panel.id), "");
+        assertThat(first.prompt).startsWith("Primera propuesta.");
+        assertThat(same.prompt).isEqualTo(first.prompt);
+        assertThat(same.aiCacheKey).isEqualTo(first.aiCacheKey);
+        em.flush();
+        em.clear();
+        workflow.deleteDraft(novel.id, first.id);
+        em.flush();
+        var refreshed = workflow.createDraft(novel.id, java.util.List.of(panel.id), "");
+        assertThat(refreshed.prompt).startsWith("Segunda propuesta.");
+        assertThat(workflow.drafts(novel.id)).hasSize(2);
+        server.verify();
+        }
+
+    @Test
+    @Transactional
+    void multiplePanelDraftAndApprovalOverlapPersistInDuckDb() throws Exception {
+        Novel novel = workflow.createNovel("Escena completa", "Una ventana oscura bajo la lluvia.");
+        Chunk chunk = new Chunk();
+        chunk.novelId = novel.id;
+        chunk.position = 1;
+        chunk.content = novel.source;
+        em.persist(chunk);
+        var panels = new java.util.ArrayList<Panel>();
+        for (int position = 1; position <= 3; position++) {
+            Panel panel = new Panel();
+            panel.novelId = novel.id;
+            panel.chunkId = chunk.id;
+            panel.chunkPosition = 1;
+            panel.position = position;
+            panel.imagePrompt = "Viñeta " + position;
+            em.persist(panel);
+            panels.add(panel);
+        }
+        em.flush();
+        var draft = workflow.createDraft(novel.id, panels.stream().map(panel -> panel.id).toList(), "");
+        var output = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(2, 2, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", output);
+        var candidate = workflow.uploadImage(novel.id, draft.id, output.toByteArray());
+        em.flush();
+        em.clear();
+        assertThat(em.find(local.higanbana.domain.StudioDraft.class, draft.id).panelIds)
+                .containsExactlyElementsOf(panels.stream().map(panel -> panel.id).toList());
+        workflow.approve(novel.id, candidate.id);
+        em.flush();
+        em.clear();
+        workflow.deleteDraft(novel.id, draft.id);
+        em.flush();
+        em.clear();
+        assertThat(workflow.drafts(novel.id)).isEmpty();
+        assertThat(workflow.candidate(novel.id, candidate.id).draftId).isNull();
+        assertThat(workflow.candidateImage(novel.id, candidate.id).mediaType()).isEqualTo("image/png");
+        var duplicateDraft = workflow.createDraft(novel.id, java.util.List.of(panels.get(2).id), "");
+        var duplicate = workflow.uploadImage(novel.id, duplicateDraft.id, output.toByteArray());
+        org.assertj.core.api.Assertions.assertThatIllegalArgumentException()
+                .isThrownBy(() -> workflow.approve(novel.id, duplicate.id));
+    }
+
     @Test void aiResponsesPersistInDuckDbAndExpiredEntriesAreIgnored() {
         cache.store("a".repeat(64), "describe-v1", "https://provider.test", "model-a", "prompt-v1",
                 "Una descripcion reutilizable.", Duration.ofDays(30));
@@ -59,6 +226,12 @@ class DuckDbPersistenceTest {
         cache.store("a".repeat(64), "describe-v1", "https://provider.test", "model-a", "prompt-v1",
             "Descripcion actualizada.", Duration.ofDays(30));
         assertThat(cache.find("a".repeat(64))).contains("Descripcion actualizada.");
+
+        cache.store("c".repeat(64), "describe-v1", "https://provider.test", "model-a", "prompt-v1",
+            "Otra descripcion.", Duration.ofDays(30));
+        cache.evict("a".repeat(64));
+        assertThat(cache.find("a".repeat(64))).isEmpty();
+        assertThat(cache.find("c".repeat(64))).contains("Otra descripcion.");
 
         jdbc.update("""
             INSERT INTO ai_response_cache (cache_key, operation, provider, model, prompt_version, response, expires_at)

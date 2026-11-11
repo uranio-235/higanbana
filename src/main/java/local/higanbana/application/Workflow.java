@@ -6,7 +6,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import javax.imageio.ImageIO;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -23,16 +26,14 @@ import local.higanbana.domain.*;
 public class Workflow {
     private final EntityManager em;
     private final TextAssistant text;
-    private final ImageProvider images;
     private final Path mangaDirectory;
     private final int analysisWindow;
 
-    public Workflow(EntityManager em, TextAssistant text, ImageProvider images,
+    public Workflow(EntityManager em, TextAssistant text,
                     @Value("${app.manga-dir}") String mangaDirectory,
                     @Value("${app.chunks.analysis-window-chars:5000}") int analysisWindow) {
         this.em = em;
         this.text = text;
-        this.images = images;
         this.mangaDirectory = Path.of(mangaDirectory).toAbsolutePath().normalize();
         if (analysisWindow < 200 || analysisWindow > 5000) {
             throw new IllegalArgumentException("app.chunks.analysis-window-chars debe estar entre 200 y 5000.");
@@ -263,8 +264,8 @@ public class Workflow {
     public StudioDraft createDraft(long novelId, List<Long> panelIds, String direction, List<Long> characterIds) {
         mutableNovel(novelId);
         revision(direction);
-        if (panelIds == null || panelIds.isEmpty() || panelIds.size() > 2 || panelIds.stream().distinct().count() != panelIds.size()) {
-            fail("Selecciona exactamente uno o dos paneles distintos de la misma novela.");
+        if (panelIds == null || panelIds.isEmpty() || panelIds.stream().distinct().count() != panelIds.size()) {
+            fail("Selecciona paneles distintos de un mismo chunk.");
         }
         List<Panel> selected = new ArrayList<>();
         for (Long panelId : panelIds) {
@@ -274,6 +275,10 @@ public class Workflow {
             selected.add(panel);
         }
         selected.sort(Comparator.comparingInt((Panel panel) -> panel.chunkPosition).thenComparingInt(panel -> panel.position));
+        if (selected.stream().anyMatch(panel -> !Objects.equals(panel.chunkId, selected.getFirst().chunkId))) {
+            fail("Selecciona paneles de un mismo chunk.");
+        }
+        Chunk sourceChunk = chunk(novelId, selected.getFirst().chunkId);
         List<Long> castIds = characterIds == null ? List.of() : characterIds;
         if (castIds.stream().anyMatch(Objects::isNull) || castIds.stream().distinct().count() != castIds.size()) {
             fail("Selecciona personajes distintos de esta novela.");
@@ -285,20 +290,34 @@ public class Workflow {
         if (characterContext.length() > 3000) { fail("Las fichas seleccionadas superan 3000 caracteres. Selecciona menos personajes."); }
         List<String> selectedPrompts = selected.stream().map(panel -> panel.imagePrompt).toList();
         selectedPrompts.forEach(prompt -> validText(prompt, 1500, "Prompt de imagen del panel"));
-        String prompt = selectedPrompts.size() == 1
-            ? selectedPrompts.getFirst()
-            : "Crear una sola imagen manga con exactamente dos viñetas distintas, en el orden narrativo indicado. "
-                + "Mantener cada acción en su propia viñeta, sin mezclarlas.\n\n"
-                + "Viñeta 1:\n" + selectedPrompts.getFirst() + "\n\nViñeta 2:\n" + selectedPrompts.get(1);
+        String format = "Dibujo de manga japones en blanco y negro, tinta negra, lineas expresivas, "
+                + "contraste y tramas de semitonos. Composicion narrativa clara; mantener coherentes los personajes "
+                + "y el entorno. Sin color, fotografia, render 3D, texto, letras, globos de dialogo, "
+            + "logotipos ni marcas de agua. Interpretar cualquier color mencionado en las escenas como tonos de gris.\n\n";
+        StringBuilder promptBuilder = new StringBuilder(format)
+            .append("Crear una sola imagen manga con exactamente ").append(selectedPrompts.size())
+            .append(selectedPrompts.size() == 1 ? " viñeta.\n\n" : " viñetas distintas, en el orden narrativo indicado. Mantener cada accion en su propia viñeta, sin mezclarlas.\n\n");
+        for (int index = 0; index < selectedPrompts.size(); index++) {
+            promptBuilder.append("Viñeta ").append(index + 1).append(":\n").append(selectedPrompts.get(index)).append("\n\n");
+        }
+        promptBuilder.append("Texto original de referencia: conserva los detalles visuales de la novela pertinentes a las viñetas seleccionadas; no añadas escenas que no se hayan seleccionado.\n")
+            .append(sourceChunk.content);
+        String prompt = promptBuilder.toString();
         if (!direction.isBlank()) { prompt += "\n\nDireccion visual adicional: " + direction; }
-        validText(prompt, 6000, "Descripcion");
+        validText(prompt, 30000, "Descripcion");
+        String context = prompt + (characterContext.isEmpty() ? "" : "\n\n" + characterContext);
+        var generated = text.studioPrompt(context);
+        String finalPrompt = generated.text() + "\n\nReferencias de los paneles y texto original:\n" + prompt;
+        validText(finalPrompt, 41000, "Descripcion");
         StudioDraft draft = new StudioDraft();
         draft.novelId = novelId;
         draft.firstPanelId = selected.getFirst().id;
-        draft.secondPanelId = selected.size() == 2 ? selected.get(1).id : null;
+        draft.secondPanelId = selected.size() > 1 ? selected.get(1).id : null;
+        draft.panelIds.addAll(selected.stream().map(panel -> panel.id).toList());
         draft.narrativeOrder = selected.getFirst().chunkPosition * 100 + selected.getFirst().position;
-        draft.prompt = prompt;
+        draft.prompt = finalPrompt;
         draft.characterContext = characterContext;
+        draft.aiCacheKey = generated.cacheKey();
         draft.provenance = "Prompts de panel / " + text.imagePanelPromptProvenance();
         em.persist(draft);
         return draft;
@@ -314,34 +333,71 @@ public class Workflow {
         mutableNovel(novelId);
         StudioDraft draft = required(StudioDraft.class, draftId);
         owned(draft.novelId, novelId);
-        validText(prompt, 6000, "Descripcion");
+        validText(prompt, 41000, "Descripcion");
         draft.prompt = prompt;
     }
 
-    public Candidate generate(long novelId, long draftId) {
+    public void deleteDraft(long novelId, long draftId) {
         mutableNovel(novelId);
         StudioDraft draft = required(StudioDraft.class, draftId);
         owned(draft.novelId, novelId);
-        validText(draft.prompt, 6000, "Descripcion guardada");
-        String imagePrompt = draft.prompt + (draft.characterContext.isEmpty() ? "" : "\n\n" + draft.characterContext);
-        validText(imagePrompt, 10000, "Descripcion y fichas de personajes");
-        ImageProvider.ImageResult image = images.generate(imagePrompt);
-        if (image.bytes() == null || image.bytes().length == 0 || image.bytes().length > 5_000_000
-                || !List.of("image/svg+xml", "image/png", "image/jpeg").contains(image.mediaType())) {
-            fail("El proveedor devolvio una imagen no valida.");
+        var candidates = em.createQuery("from Candidate where draftId=:draft", Candidate.class)
+                .setParameter("draft", draftId).getResultList();
+        for (Candidate candidate : candidates) {
+            if (candidate.panelIds.isEmpty()) {
+                candidate.panelIds.addAll(draft.panelIds.isEmpty()
+                        ? legacyPanels(candidate.firstPanelId, candidate.secondPanelId) : draft.panelIds);
+            }
+            candidate.draftId = null;
         }
-        Candidate candidate = new Candidate();
-        candidate.novelId = novelId;
-        candidate.draftId = draftId;
-        candidate.firstPanelId = draft.firstPanelId;
-        candidate.secondPanelId = draft.secondPanelId;
-        candidate.narrativeOrder = draft.narrativeOrder;
-        candidate.prompt = imagePrompt;
-        candidate.image = image.bytes();
-        candidate.mediaType = image.mediaType();
-        candidate.provenance = image.provenance();
-        em.persist(candidate);
-        return candidate;
+        text.evictCachedResponse(draft.aiCacheKey);
+        em.remove(draft);
+    }
+
+    public Candidate uploadImage(long novelId, long draftId, byte[] bytes) {
+        mutableNovel(novelId);
+        StudioDraft draft = required(StudioDraft.class, draftId);
+        owned(draft.novelId, novelId);
+        validText(draft.prompt, 41000, "Descripcion guardada");
+        String imagePrompt = draft.prompt + (draft.characterContext.isEmpty() ? "" : "\n\n" + draft.characterContext);
+        validText(imagePrompt, 45000, "Descripcion y fichas de personajes");
+        if (bytes == null || bytes.length == 0 || bytes.length > 20_000_000) {
+            fail("La imagen debe tener un maximo de 20 MB.");
+        }
+        try (var input = ImageIO.createImageInputStream(new ByteArrayInputStream(bytes))) {
+            var readers = ImageIO.getImageReaders(input);
+            if (!readers.hasNext()) { throw new IllegalArgumentException("Solo se admiten imagenes PNG o JPEG validas."); }
+            var reader = readers.next();
+            try {
+                reader.setInput(input, true, true);
+                String format = reader.getFormatName().toLowerCase(java.util.Locale.ROOT);
+                if (!List.of("png", "jpeg", "jpg").contains(format)
+                        || (long) reader.getWidth(0) * reader.getHeight(0) > 40_000_000) {
+                    throw new IllegalArgumentException("La imagen debe ser PNG o JPEG y no superar 40 megapixeles.");
+                }
+                var decoded = reader.read(0);
+                var output = new ByteArrayOutputStream();
+                if (decoded == null || !ImageIO.write(decoded, format, output) || output.size() > 50_000_000) {
+                    throw new IllegalArgumentException("No se pudo procesar la imagen o supera el limite de almacenamiento de 50 MB.");
+                }
+                Candidate candidate = new Candidate();
+                candidate.novelId = novelId;
+                candidate.draftId = draftId;
+                candidate.firstPanelId = draft.firstPanelId;
+                candidate.secondPanelId = draft.secondPanelId;
+                candidate.narrativeOrder = draft.narrativeOrder;
+                candidate.prompt = imagePrompt;
+                candidate.image = output.toByteArray();
+                candidate.mediaType = format.equals("png") ? "image/png" : "image/jpeg";
+                candidate.provenance = "Imagen subida por el usuario";
+                em.persist(candidate);
+                return candidate;
+            } finally {
+                reader.dispose();
+            }
+        } catch (IOException exception) {
+            throw new IllegalArgumentException("La imagen no es valida o esta incompleta.", exception);
+        }
     }
 
     public List<Candidate> candidates(long novelId) {
@@ -372,8 +428,11 @@ public class Workflow {
             return reader(novelId).stream().filter(entry -> entry.candidateId == candidateId).findFirst().orElseThrow();
         }
         if (candidate.state != ReviewState.PENDING) { fail("Solo se pueden aprobar candidatos pendientes."); }
+        List<Long> candidatePanels = candidatePanels(candidate);
         for (MangaEntry entry : reader(novelId)) {
-            if (overlaps(entry, candidate.firstPanelId) || (candidate.secondPanelId != null && overlaps(entry, candidate.secondPanelId))) {
+            Candidate approved = em.find(Candidate.class, entry.candidateId);
+            List<Long> covered = approved == null ? legacyPanels(entry.firstPanelId, entry.secondPanelId) : candidatePanels(approved);
+            if (candidatePanels.stream().anyMatch(covered::contains)) {
                 fail("Uno de estos paneles ya tiene una imagen aprobada.");
             }
         }
@@ -436,8 +495,18 @@ public class Workflow {
         }
     }
 
-    private boolean overlaps(MangaEntry entry, Long panelId) {
-        return Objects.equals(entry.firstPanelId, panelId) || Objects.equals(entry.secondPanelId, panelId);
+    private List<Long> candidatePanels(Candidate candidate) {
+        if (!candidate.panelIds.isEmpty()) { return List.copyOf(candidate.panelIds); }
+        StudioDraft draft = candidate.draftId == null ? null : em.find(StudioDraft.class, candidate.draftId);
+        return draft != null && !draft.panelIds.isEmpty()
+                ? List.copyOf(draft.panelIds) : legacyPanels(candidate.firstPanelId, candidate.secondPanelId);
+    }
+
+    private List<Long> legacyPanels(Long first, Long second) {
+        List<Long> panels = new ArrayList<>();
+        if (first != null) { panels.add(first); }
+        if (second != null) { panels.add(second); }
+        return panels;
     }
 
     private Novel mutableNovel(long novelId) {

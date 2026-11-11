@@ -40,6 +40,8 @@ class WorkflowTest {
         doAnswer(invocation -> java.util.stream.IntStream.rangeClosed(1, invocation.getArgument(1))
             .mapToObj(index -> "Prompt visual de prueba " + index + ": mantener la escena y su encuadre.").toList())
             .when(text).imagePanelPrompts(anyString(), anyInt(), anyString());
+        doReturn(new local.higanbana.domain.ai.CachedText("Propuesta de prueba.", "test-key"))
+            .when(text).studioPrompt(anyString());
     }
 
     @Test void failedNarrativeRevisionKeepsThePreviousProposal() {
@@ -49,6 +51,15 @@ class WorkflowTest {
         doThrow(new IllegalArgumentException("Proveedor no disponible")).when(text).chunks(anyString(), anyInt(), anyString());
         assertThatIllegalArgumentException().isThrownBy(() -> workflow.proposeChunks(novel.id, "Revisar"));
         assertThat(workflow.chunkPlan(novel.id).segments).containsExactlyElementsOf(previous);
+    }
+
+    @Test void failedStudioGenerationDoesNotCreateADescription() {
+        Novel novel = prepared();
+        Long panelId = workflow.panels(novel.id).getFirst().id;
+        doThrow(new IllegalArgumentException("NVIDIA no disponible")).when(text).studioPrompt(anyString());
+        assertThatIllegalArgumentException().isThrownBy(() -> workflow.createDraft(novel.id, List.of(panelId), ""))
+                .withMessageContaining("NVIDIA no disponible");
+        assertThat(workflow.drafts(novel.id)).isEmpty();
     }
 
     @Test void novelCharactersPersistThroughRelationshipAndOrphansAreRemoved() {
@@ -100,7 +111,7 @@ class WorkflowTest {
         workflow.updateCharacter(novel.id, selected.id, "Aiko", "Ahora lleva abrigo azul.");
         workflow.deleteCharacter(novel.id, selected.id);
         em.flush();
-        Candidate candidate = workflow.generate(novel.id, draft.id);
+        Candidate candidate = workflow.uploadImage(novel.id, draft.id, imageBytes());
         assertThat(candidate.prompt).contains("Primer plano al amanecer.", "Aiko", "Ojos grises y abrigo rojo.")
                 .doesNotContain("abrigo azul", "Sombrero verde");
     }
@@ -120,9 +131,56 @@ class WorkflowTest {
         assertThat(panel.imagePrompt).isEqualTo(generated);
 
         StudioDraft draft = workflow.createDraft(novel.id, List.of(panel.id), "Luz fria");
-        assertThat(draft.prompt).contains(generated, "Luz fria");
-        Candidate candidate = workflow.generate(novel.id, draft.id);
+        assertThat(draft.prompt).contains(generated, "Luz fria", "manga japones en blanco y negro", "tramas de semitonos", "tonos de gris", "exactamente 1 viñeta");
+        Candidate candidate = workflow.uploadImage(novel.id, draft.id, imageBytes());
         assertThat(candidate.prompt).contains(generated, "Luz fria");
+    }
+
+    @Test void uploadedImageCreatesAReviewCandidateAndRejectsInvalidFiles() throws Exception {
+        Novel novel = prepared();
+        StudioDraft draft = workflow.createDraft(novel.id, List.of(workflow.panels(novel.id).getFirst().id), "");
+        var image = new java.awt.image.BufferedImage(2, 2, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        var output = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(image, "png", output);
+
+        Candidate candidate = workflow.uploadImage(novel.id, draft.id, output.toByteArray());
+        assertThat(candidate.mediaType).isEqualTo("image/png");
+        assertThat(candidate.provenance).isEqualTo("Imagen subida por el usuario");
+        assertThat(candidate.prompt).isEqualTo(draft.prompt);
+        assertThat(candidate.state).isEqualTo(ReviewState.PENDING);
+        assertThatIllegalArgumentException().isThrownBy(() -> workflow.uploadImage(novel.id, draft.id, new byte[]{1, 2, 3}));
+        Novel other = workflow.createNovel("Otra", "Texto.");
+        assertThatIllegalArgumentException().isThrownBy(() -> workflow.uploadImage(other.id, draft.id, output.toByteArray()));
+    }
+
+    @Test void acceptsGeneratedPngLargerThanTwoMegabytes() throws Exception {
+        Novel novel = prepared();
+        StudioDraft draft = workflow.createDraft(novel.id, List.of(workflow.panels(novel.id).getFirst().id), "");
+        var image = new java.awt.image.BufferedImage(1200, 900, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        var random = new java.util.Random(1);
+        for (int row = 0; row < image.getHeight(); row++) {
+            for (int column = 0; column < image.getWidth(); column++) {
+                image.setRGB(column, row, random.nextInt(0x1000000));
+            }
+        }
+        var output = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(image, "png", output);
+        assertThat(output.size()).isGreaterThan(2_000_000);
+        Candidate candidate = workflow.uploadImage(novel.id, draft.id, output.toByteArray());
+        assertThat(candidate.mediaType).isEqualTo("image/png");
+        assertThat(candidate.image).isNotEmpty();
+        assertThatIllegalArgumentException().isThrownBy(() -> workflow.uploadImage(novel.id, draft.id, new byte[20_000_001]))
+            .withMessageContaining("20 MB");
+    }
+
+    private byte[] imageBytes() {
+        try {
+            var output = new java.io.ByteArrayOutputStream();
+            javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(2, 2, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", output);
+            return output.toByteArray();
+        } catch (java.io.IOException exception) {
+            throw new java.io.UncheckedIOException(exception);
+        }
     }
 
     @Test void demoPanelPromptsCannotBeConfirmedAsRealImagePrompts() {
@@ -174,12 +232,28 @@ class WorkflowTest {
         var panels = workflow.panels(first.id);
         Long foreign = workflow.panels(second.id).getFirst().id;
         assertThatIllegalArgumentException().isThrownBy(() -> workflow.createDraft(first.id, List.of(), ""));
-        assertThatIllegalArgumentException().isThrownBy(() -> workflow.createDraft(first.id, panels.stream().map(panel -> panel.id).toList(), ""));
         assertThatIllegalArgumentException().isThrownBy(() -> workflow.createDraft(first.id, List.of(panels.getFirst().id, panels.getFirst().id), ""));
         assertThatIllegalArgumentException().isThrownBy(() -> workflow.createDraft(first.id, List.of(foreign), ""));
-        StudioDraft draft = workflow.createDraft(first.id, List.of(panels.get(1).id, panels.getFirst().id), "");
+        Panel otherChunkPanel = new Panel();
+        otherChunkPanel.novelId = first.id;
+        otherChunkPanel.chunkId = workflow.chunks(first.id).get(1).id;
+        otherChunkPanel.chunkPosition = 2;
+        otherChunkPanel.position = 1;
+        otherChunkPanel.imagePrompt = "Otra escena.";
+        em.persist(otherChunkPanel);
+        assertThatIllegalArgumentException().isThrownBy(() -> workflow.createDraft(first.id, List.of(panels.getFirst().id, otherChunkPanel.id), ""));
+        StudioDraft draft = workflow.createDraft(first.id, List.of(panels.get(2).id, panels.getFirst().id, panels.get(1).id), "");
         assertThat(draft.firstPanelId).isEqualTo(panels.getFirst().id);
         assertThat(draft.secondPanelId).isEqualTo(panels.get(1).id);
+        assertThat(draft.panelIds).containsExactly(panels.getFirst().id, panels.get(1).id, panels.get(2).id);
+        assertThat(draft.prompt).contains("manga japones en blanco y negro", "exactamente 3 viñetas", "Viñeta 1:", "Viñeta 2:", "Viñeta 3:", workflow.chunks(first.id).getFirst().content);
+        Candidate candidate = workflow.uploadImage(first.id, draft.id, imageBytes());
+        em.flush();
+        em.clear();
+        workflow.approve(first.id, candidate.id);
+        StudioDraft overlap = workflow.createDraft(first.id, List.of(panels.get(2).id), "");
+        Candidate duplicate = workflow.uploadImage(first.id, overlap.id, imageBytes());
+        assertThatIllegalArgumentException().isThrownBy(() -> workflow.approve(first.id, duplicate.id));
     }
 
     @Test void completeApprovalFlowOnlyStoresApprovedImages() throws Exception {
@@ -187,18 +261,42 @@ class WorkflowTest {
         var panels = workflow.panels(novel.id);
         var draft = workflow.createDraft(novel.id, List.of(panels.getFirst().id), "Plano general");
         workflow.saveDraft(novel.id, draft.id, "Tinta negra. Estacion al amanecer.");
-        Candidate candidate = workflow.generate(novel.id, draft.id);
+        Candidate candidate = workflow.uploadImage(novel.id, draft.id, imageBytes());
         assertThat(workflow.reader(novel.id)).isEmpty();
         assertThat(Files.exists(storage.resolve("anything.svg"))).isFalse();
         assertThat(candidate.image).isNotEmpty();
-        assertThat(new String(candidate.image, java.nio.charset.StandardCharsets.UTF_8)).contains("<svg", "DEMO");
+        assertThat(candidate.mediaType).isEqualTo("image/png");
         MangaEntry entry = workflow.approve(novel.id, candidate.id);
         assertThat(workflow.approve(novel.id, candidate.id).id).isEqualTo(entry.id);
         assertThat(workflow.reader(novel.id)).hasSize(1);
         assertThat(Files.readAllBytes(storage.resolve(entry.filename))).isNotEmpty();
         assertThat(candidate.image).isNull();
         assertThatIllegalArgumentException().isThrownBy(() -> workflow.reject(novel.id, candidate.id));
-        Candidate duplicate = workflow.generate(novel.id, draft.id);
+        Candidate duplicate = workflow.uploadImage(novel.id, draft.id, imageBytes());
+        assertThatIllegalArgumentException().isThrownBy(() -> workflow.approve(novel.id, duplicate.id));
+    }
+
+    @Test void deletingUnusedAndLegacyDraftsPreservesLegacyCandidatePanels() {
+        Novel novel = prepared();
+        var panels = workflow.panels(novel.id);
+        StudioDraft unused = workflow.createDraft(novel.id, List.of(panels.getFirst().id), "");
+        workflow.deleteDraft(novel.id, unused.id);
+        assertThat(workflow.drafts(novel.id)).isEmpty();
+
+        StudioDraft legacy = workflow.createDraft(novel.id, List.of(panels.getFirst().id, panels.get(1).id), "");
+        legacy.panelIds.clear();
+        Candidate candidate = workflow.uploadImage(novel.id, legacy.id, imageBytes());
+        em.flush();
+        em.clear();
+        workflow.deleteDraft(novel.id, legacy.id);
+        em.flush();
+        em.clear();
+        Candidate saved = workflow.candidate(novel.id, candidate.id);
+        assertThat(saved.draftId).isNull();
+        assertThat(saved.panelIds).containsExactly(panels.getFirst().id, panels.get(1).id);
+        workflow.approve(novel.id, candidate.id);
+        StudioDraft overlap = workflow.createDraft(novel.id, List.of(panels.get(1).id), "");
+        Candidate duplicate = workflow.uploadImage(novel.id, overlap.id, imageBytes());
         assertThatIllegalArgumentException().isThrownBy(() -> workflow.approve(novel.id, duplicate.id));
     }
 
@@ -207,7 +305,7 @@ class WorkflowTest {
         Chunk chunk = workflow.chunks(novel.id).getFirst();
         Long panel = workflow.panels(novel.id).getFirst().id;
         var draft = workflow.createDraft(novel.id, List.of(panel), "");
-        Candidate candidate = workflow.generate(novel.id, draft.id);
+        Candidate candidate = workflow.uploadImage(novel.id, draft.id, imageBytes());
         workflow.reject(novel.id, candidate.id);
         workflow.reject(novel.id, candidate.id);
         assertThat(candidate.state).isEqualTo(ReviewState.REJECTED);
@@ -223,11 +321,11 @@ class WorkflowTest {
         Novel novel = prepared();
         var panels = workflow.panels(novel.id);
         var laterDraft = workflow.createDraft(novel.id, List.of(panels.get(2).id), "");
-        Candidate later = workflow.generate(novel.id, laterDraft.id);
+        Candidate later = workflow.uploadImage(novel.id, laterDraft.id, imageBytes());
         workflow.approve(novel.id, later.id);
         var earlierDraft = workflow.createDraft(novel.id, List.of(panels.get(1).id, panels.getFirst().id), "");
         workflow.saveDraft(novel.id, earlierDraft.id, "Descripcion original guardada.");
-        Candidate earlier = workflow.generate(novel.id, earlierDraft.id);
+        Candidate earlier = workflow.uploadImage(novel.id, earlierDraft.id, imageBytes());
         workflow.saveDraft(novel.id, earlierDraft.id, "Nueva direccion para otro candidato.");
         assertThat(earlier.prompt).isEqualTo("Descripcion original guardada.");
         var firstEntry = workflow.approve(novel.id, earlier.id);

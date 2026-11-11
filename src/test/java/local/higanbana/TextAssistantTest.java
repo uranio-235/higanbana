@@ -42,6 +42,11 @@ class TextAssistantTest {
         var server = MockRestServiceServer.bindTo(builder).build();
         server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
                 .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("prompts independientes")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("manga japones en blanco y negro")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("tramas de semitonos")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("globos de dialogo")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("detalles visuales concretos del fragmento")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("No sustituyas esos detalles")))
                 .andRespond(withSuccess(completion("{\"panels\":[\"Plano general.\",\"Primer plano.\"]}"), MediaType.APPLICATION_JSON));
         var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
                 "test-model", new ObjectMapper(), builder);
@@ -214,6 +219,62 @@ class TextAssistantTest {
         server.verify();
     }
 
+    @Test void evictingStudioPromptForcesAnotherProviderRequest() throws Exception {
+        RestClient.Builder builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        var firstSeed = new java.util.concurrent.atomic.AtomicReference<Integer>();
+        server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("numero y orden de las viñetas")))
+                .andExpect(request -> {
+                    var body = ((org.springframework.mock.http.client.MockClientHttpRequest) request).getBodyAsString();
+                    firstSeed.set(new ObjectMapper().readTree(body).get("seed").intValue());
+                })
+                .andRespond(withSuccess(completion("{\"prompt\":\"Primera propuesta.\"}"), MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                .andExpect(request -> {
+                    var body = ((org.springframework.mock.http.client.MockClientHttpRequest) request).getBodyAsString();
+                    assertThat(new ObjectMapper().readTree(body).get("seed").intValue()).isNotEqualTo(firstSeed.get());
+                })
+                .andRespond(withSuccess(completion("{\"prompt\":\"Segunda propuesta.\"}"), MediaType.APPLICATION_JSON));
+        var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key", "nvidia/nemotron-3.5-lightning-30b-a3b",
+                new ObjectMapper(), builder, new InMemoryAiResponseCache());
+        var first = assistant.studioPrompt("Una viñeta junto a la ventana.");
+        assertThat(first.text()).isEqualTo("Primera propuesta.");
+        assertThat(assistant.studioPrompt("Una viñeta junto a la ventana.")).isEqualTo(first);
+        assistant.evictCachedResponse(first.cacheKey());
+        assertThat(assistant.studioPrompt("Una viñeta junto a la ventana.").text()).isEqualTo("Segunda propuesta.");
+        server.verify();
+    }
+
+        @Test void lightningDisablesReasoningToLeaveTokensForTheResponse() throws Exception {
+                RestClient.Builder builder = RestClient.builder();
+                var server = MockRestServiceServer.bindTo(builder).build();
+                server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                                .andExpect(jsonPath("$.model").value("nvidia/nemotron-3.5-lightning-30b-a3b"))
+                                .andExpect(jsonPath("$.reasoning_effort").value("none"))
+                                .andExpect(jsonPath("$.max_tokens").value(1800))
+                                .andRespond(withSuccess(completion("{\"prompt\":\"Una ventana bajo la lluvia.\"}"), MediaType.APPLICATION_JSON));
+                var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
+                                "nvidia/nemotron-3.5-lightning-30b-a3b", new ObjectMapper(), builder);
+                assertThat(assistant.studioPrompt("Una viñeta.").text()).isEqualTo("Una ventana bajo la lluvia.");
+                server.verify();
+        }
+
+    @Test void invalidStudioResponseIsNotCached() throws Exception {
+        RestClient.Builder builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                .andRespond(withSuccess(completion("{\"prompt\":null}"), MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                .andRespond(withSuccess(completion("{\"prompt\":\"Prompt valido.\"}"), MediaType.APPLICATION_JSON));
+        var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key", "test-model",
+                new ObjectMapper(), builder, new InMemoryAiResponseCache());
+        assertThatIllegalArgumentException().isThrownBy(() -> assistant.studioPrompt("Una viñeta."))
+                .withMessageContaining("prompt final no valido");
+        assertThat(assistant.studioPrompt("Una viñeta.").text()).isEqualTo("Prompt valido.");
+        server.verify();
+    }
+
     @Test void repeatedNarrativeWindowUsesCachedSceneBoundaries() throws Exception {
         RestClient.Builder builder = RestClient.builder();
         var server = MockRestServiceServer.bindTo(builder).build();
@@ -302,7 +363,7 @@ class TextAssistantTest {
                 "test-model", new ObjectMapper(), builder);
 
                 assertThatIllegalArgumentException().isThrownBy(() -> assistant.imagePanelPrompts("Una estacion.", 1, ""))
-                        .withMessageContaining("Palo No value present");
+                        .withMessageContaining("prompts de imagen no validos");
         server.verify();
     }
 
@@ -324,8 +385,22 @@ class TextAssistantTest {
         var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "private-test-key",
                 "test-model", new ObjectMapper(), builder);
                 assertThatThrownBy(() -> assistant.imagePanelPrompts("context", 1, ""))
-                        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Palo 401")
+                        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("credenciales")
                         .hasMessageNotContaining("private-test-key");
+        server.verify();
+    }
+
+    @Test void nvidiaOverloadIsReportedWithoutProviderBodyOrCachedResult() {
+        RestClient.Builder builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE).body("private provider details"));
+        var cache = new InMemoryAiResponseCache();
+        var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key", "test-model",
+                new ObjectMapper(), builder, cache);
+        assertThatIllegalArgumentException().isThrownBy(() -> assistant.studioPrompt("Una viñeta."))
+                .withMessageContaining("temporalmente sobrecargado")
+                .withMessageNotContaining("private provider details");
         server.verify();
     }
 

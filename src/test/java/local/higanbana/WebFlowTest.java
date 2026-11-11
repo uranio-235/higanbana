@@ -28,7 +28,7 @@ import local.higanbana.application.Workflow;
 import local.higanbana.infrastructure.ai.TextAssistant;
 import local.higanbana.infrastructure.ai.JdbcAiResponseCache;
 
-@SpringBootTest(properties = {"app.nvidia.api-key=test-key", "app.text.model=meta/llama-3.1-8b-instruct", "app.image.model="})
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {"app.nvidia.api-key=test-key", "app.text.model=meta/llama-3.1-8b-instruct", "app.image.model="})
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class WebFlowTest {
@@ -40,6 +40,7 @@ class WebFlowTest {
     }
     @Autowired MockMvc mvc;
     @Autowired Workflow workflow;
+        @org.springframework.boot.test.web.server.LocalServerPort int port;
         @MockitoSpyBean TextAssistant text;
     @Autowired org.springframework.core.env.Environment environment;
         @Autowired javax.sql.DataSource dataSource;
@@ -70,6 +71,8 @@ class WebFlowTest {
         doAnswer(invocation -> java.util.stream.IntStream.rangeClosed(1, invocation.getArgument(1))
                 .mapToObj(index -> "Prompt visual de prueba " + index + ": accion, personaje y encuadre.").toList())
                 .when(text).imagePanelPrompts(anyString(), anyInt(), anyString());
+        doReturn(new local.higanbana.domain.ai.CachedText("Propuesta de prueba.", "test-key"))
+                .when(text).studioPrompt(anyString());
         session = (MockHttpSession) mvc.perform(get("/")).andExpect(status().isOk())
                 .andExpect(content().string(containsString("Nueva obra"))).andReturn().getRequest().getSession();
     }
@@ -78,12 +81,147 @@ class WebFlowTest {
         return post(path).session(session).param("_csrf", session.getAttribute("csrf").toString());
     }
 
+        @Test void realHttpUploadAcceptsLargePngAndReportsOversizeWithoutReset() throws Exception {
+                var novel = workflow.createNovel("Subida HTTP", "La lluvia golpea la ventana.");
+                workflow.proposeChunks(novel.id, 5000, "");
+                workflow.confirmChunks(novel.id);
+                var chunk = workflow.chunks(novel.id).getFirst();
+                workflow.proposePanels(novel.id, chunk.id, 1, "");
+                workflow.confirmPanels(novel.id, chunk.id);
+                var draft = workflow.createDraft(novel.id, List.of(workflow.panels(novel.id).getFirst().id), "");
+                var image = new java.awt.image.BufferedImage(1200, 900, java.awt.image.BufferedImage.TYPE_INT_RGB);
+                var random = new java.util.Random(1);
+                for (int row = 0; row < image.getHeight(); row++) {
+                        for (int column = 0; column < image.getWidth(); column++) {
+                                image.setRGB(column, row, random.nextInt(0x1000000));
+                        }
+                }
+                var output = new java.io.ByteArrayOutputStream();
+                javax.imageio.ImageIO.write(image, "png", output);
+                assertThat(output.size()).isGreaterThan(2_000_000);
+
+                var client = java.net.http.HttpClient.newBuilder().cookieHandler(new java.net.CookieManager()).build();
+                String base = "http://127.0.0.1:" + port + "/novels/" + novel.id;
+                var page = client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(base + "/studio")).GET().build(),
+                                java.net.http.HttpResponse.BodyHandlers.ofString());
+                var csrfMatch = java.util.regex.Pattern.compile("name=\"_csrf\" value=\"([^\"]+)\"").matcher(page.body());
+                assertThat(csrfMatch.find()).isTrue();
+                String csrf = csrfMatch.group(1);
+                String url = base + "/studio/" + draft.id + "/upload";
+                var success = uploadOverHttp(client, url, csrf, output.toByteArray());
+                assertThat(success.statusCode()).isEqualTo(302);
+                assertThat(workflow.candidates(novel.id)).hasSize(1);
+                var oversized = uploadOverHttp(client, url, csrf, new byte[23_000_000]);
+                assertThat(oversized.statusCode()).isEqualTo(400);
+                assertThat(oversized.body()).contains("limite de 20 MB");
+                assertThat(workflow.candidates(novel.id)).hasSize(1);
+        }
+
+        private java.net.http.HttpResponse<String> uploadOverHttp(java.net.http.HttpClient client, String url,
+                                                                                                                           String csrf, byte[] image) throws Exception {
+                String boundary = "higanbana-test-boundary";
+                String prefix = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"_csrf\"\r\n\r\n" + csrf
+                                + "\r\n--" + boundary + "\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\nPrompt HTTP"
+                                + "\r\n--" + boundary + "\r\nContent-Disposition: form-data; name=\"image\"; filename=\"panel.png\"\r\n"
+                                + "Content-Type: image/png\r\n\r\n";
+                String suffix = "\r\n--" + boundary + "--\r\n";
+                var body = java.net.http.HttpRequest.BodyPublishers.concat(
+                                java.net.http.HttpRequest.BodyPublishers.ofString(prefix),
+                                java.net.http.HttpRequest.BodyPublishers.ofByteArray(image),
+                                java.net.http.HttpRequest.BodyPublishers.ofString(suffix));
+                var request = java.net.http.HttpRequest.newBuilder(java.net.URI.create(url))
+                                .header("Content-Type", "multipart/form-data; boundary=" + boundary).POST(body).build();
+                return client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+        }
+
+        private MockMultipartFile image() throws Exception {
+                var output = new java.io.ByteArrayOutputStream();
+                javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(2, 2, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", output);
+                return new MockMultipartFile("image", "panel.png", "image/png", output.toByteArray());
+        }
+
+        @Test void studioAcceptsAllPanelsOfAChunkAndIncludesTheOriginalScene() throws Exception {
+                var novel = workflow.createNovel("Escena", "La lampara roja ilumina la ventana bajo la lluvia.");
+                workflow.proposeChunks(novel.id, 5000, "");
+                workflow.confirmChunks(novel.id);
+                var chunk = workflow.chunks(novel.id).getFirst();
+                workflow.proposePanels(novel.id, chunk.id, 3, "");
+                workflow.confirmPanels(novel.id, chunk.id);
+                var panels = workflow.panels(novel.id);
+                String base = "/novels/" + novel.id;
+                mvc.perform(get(base + "/studio").session(session)).andExpect(status().isOk())
+                                .andExpect(content().string(containsString("0 seleccionados")))
+                                .andExpect(content().string(org.hamcrest.Matchers.not(containsString("1 o 2 paneles por imagen"))));
+                mvc.perform(form(base + "/studio").param("panelIds", panels.stream().map(panel -> panel.id.toString()).toArray(String[]::new)))
+                                .andExpect(status().is3xxRedirection());
+                var draft = workflow.drafts(novel.id).getFirst();
+                assertThat(draft.prompt).contains("exactamente 3 viñetas", "Viñeta 3:", chunk.content);
+        }
+
         @Test void modelsHaveIndependentFileConfiguration() {
                 assertThat(environment.getProperty("app.text.model")).isEqualTo("meta/llama-3.1-8b-instruct");
                 assertThat(environment.containsProperty("app.image.model")).isTrue();
                 assertThat(environment.getProperty("app.image.model")).isEmpty();
                 assertThat("test-key".equals(environment.getProperty("app.nvidia.api-key"))).isTrue();
         }
+
+    @Test void studioProviderFailureKeepsTheSelectionAndDirection() throws Exception {
+        var novel = workflow.createNovel("Escena fallida", "Lluvia en el aula.");
+        workflow.proposeChunks(novel.id, 5000, "");
+        workflow.confirmChunks(novel.id);
+        var chunk = workflow.chunks(novel.id).getFirst();
+        workflow.proposePanels(novel.id, chunk.id, 2, "");
+        workflow.confirmPanels(novel.id, chunk.id);
+        var panels = workflow.panels(novel.id);
+        var character = workflow.addCharacter(novel.id, "Yuna", "Uniforme escolar.");
+        doThrow(new local.higanbana.domain.ai.TextProviderException("NVIDIA esta temporalmente sobrecargado."))
+                .when(text).studioPrompt(anyString());
+        String base = "/novels/" + novel.id;
+        var result = mvc.perform(form(base + "/studio")
+                        .param("panelIds", panels.getFirst().id.toString(), panels.get(1).id.toString())
+                        .param("characterIds", character.id.toString()).param("direction", "Luz suave"))
+                .andExpect(status().is3xxRedirection()).andReturn();
+        assertThat(result.getFlashMap().get("selectedPanelIds"))
+                .isEqualTo(List.of(panels.getFirst().id, panels.get(1).id));
+        assertThat(result.getFlashMap().get("selectedCharacterIds")).isEqualTo(List.of(character.id));
+        var page = mvc.perform(get(base + "/studio").session(session).flashAttrs(result.getFlashMap()))
+                .andExpect(status().isOk()).andExpect(content().string(containsString("NVIDIA esta temporalmente sobrecargado.")))
+                .andExpect(content().string(containsString("Luz suave")))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(java.util.regex.Pattern.compile("checked=\"checked\"").matcher(page).results().count()).isEqualTo(3);
+        assertThat(workflow.drafts(novel.id)).isEmpty();
+    }
+
+    @Test void deletingStudioDescriptionPreservesPendingImageAndRequiresOwnershipAndCsrf() throws Exception {
+        var novel = workflow.createNovel("Imagen", "La lluvia golpea la ventana.");
+        var other = workflow.createNovel("Otra", "Otro texto.");
+        workflow.proposeChunks(novel.id, 5000, "");
+        workflow.confirmChunks(novel.id);
+        var chunk = workflow.chunks(novel.id).getFirst();
+        workflow.proposePanels(novel.id, chunk.id, 3, "");
+        workflow.confirmPanels(novel.id, chunk.id);
+        var panels = workflow.panels(novel.id);
+        var draft = workflow.createDraft(novel.id, panels.stream().map(panel -> panel.id).toList(), "");
+        var candidate = workflow.uploadImage(novel.id, draft.id, image().getBytes());
+        String path = "/novels/" + novel.id + "/studio/" + draft.id + "/delete";
+        mvc.perform(get("/novels/" + novel.id + "/studio").session(session))
+                .andExpect(status().isOk()).andExpect(content().string(containsString("Eliminar descripcion")));
+        mvc.perform(post(path).session(session)).andExpect(status().isForbidden());
+        mvc.perform(form("/novels/" + other.id + "/studio/" + draft.id + "/delete"))
+                .andExpect(status().isBadRequest());
+        assertThat(workflow.drafts(novel.id)).hasSize(1);
+        mvc.perform(form(path)).andExpect(status().is3xxRedirection());
+        assertThat(workflow.drafts(novel.id)).isEmpty();
+        assertThat(workflow.candidate(novel.id, candidate.id).prompt).isEqualTo(candidate.prompt);
+        mvc.perform(get("/novels/" + novel.id + "/candidates/" + candidate.id + "/image").session(session))
+                .andExpect(status().isOk()).andExpect(content().contentType("image/png"));
+        mvc.perform(form("/novels/" + novel.id + "/candidates/" + candidate.id + "/approve"))
+                .andExpect(status().is3xxRedirection());
+        var duplicate = workflow.createDraft(novel.id, List.of(panels.get(2).id), "");
+        var duplicateCandidate = workflow.uploadImage(novel.id, duplicate.id, image().getBytes());
+        mvc.perform(form("/novels/" + novel.id + "/candidates/" + duplicateCandidate.id + "/approve"))
+                .andExpect(status().isBadRequest());
+    }
 
         @Test void panelPageShowsUnavailableInsteadOfOfferingSimulatedImagePrompts() throws Exception {
                 var novel = workflow.createNovel("Sin proveedor", "Aiko entra en el faro.");
@@ -140,10 +278,24 @@ class WebFlowTest {
                 .andExpect(status().is3xxRedirection());
         long draftId = workflow.drafts(novelId).getFirst().id;
         mvc.perform(get(base + "/studio").session(session)).andExpect(status().isOk())
-                .andExpect(content().string(containsString("Prompt final editable")));
+                .andExpect(content().string(containsString("Prompt final editable")))
+                .andExpect(content().string(containsString("Copiar prompt completo")))
+                .andExpect(content().string(containsString("Subir imagen para revision")))
+                .andExpect(content().string(org.hamcrest.Matchers.not(containsString("Imagen DEMO"))));
         mvc.perform(form(base + "/studio/" + draftId + "/save").param("prompt", "La viajera en el anden, amanecer."))
                 .andExpect(status().is3xxRedirection());
-        mvc.perform(form(base + "/studio/" + draftId + "/generate")).andExpect(status().is3xxRedirection());
+        var invalid = new MockMultipartFile("image", "fake.png", "image/png", new byte[]{1, 2, 3});
+        mvc.perform(multipart(base + "/studio/" + draftId + "/upload").file(invalid).session(session)
+                .param("_csrf", session.getAttribute("csrf").toString()).param("prompt", "No debe guardarse."))
+                .andExpect(status().isBadRequest());
+        assertThat(workflow.drafts(novelId).getFirst().prompt).isEqualTo("La viajera en el anden, amanecer.");
+        assertThat(workflow.candidates(novelId)).isEmpty();
+        mvc.perform(multipart(base + "/studio/" + draftId + "/upload").file(image()).session(session)
+                .param("prompt", "Sin token."))
+                .andExpect(status().isForbidden());
+        mvc.perform(multipart(base + "/studio/" + draftId + "/upload").file(image()).session(session)
+                .param("_csrf", session.getAttribute("csrf").toString()).param("prompt", "La viajera en el anden, amanecer."))
+                .andExpect(status().is3xxRedirection());
         long candidateId = workflow.candidates(novelId).getFirst().id;
         assertThat(workflow.candidate(novelId, candidateId).prompt).contains("Aiko", "Ojos grises, abrigo blanco.");
         mvc.perform(form(base + "/characters/" + characterId + "/delete")).andExpect(status().is3xxRedirection());
@@ -152,8 +304,7 @@ class WebFlowTest {
         mvc.perform(get(base + "/generation").session(session)).andExpect(status().isOk())
                 .andExpect(content().string(containsString("Pendiente")));
         mvc.perform(get(base + "/candidates/" + candidateId + "/image").session(session))
-                .andExpect(status().isOk()).andExpect(content().contentType("image/svg+xml"))
-                .andExpect(content().string(containsString("<svg")));
+                .andExpect(status().isOk()).andExpect(content().contentType("image/png"));
         mvc.perform(get(base + "/reader").session(session)).andExpect(status().isOk())
                 .andExpect(content().string(containsString("Todavia no hay imagenes aprobadas")));
         try (var files = Files.list(storage)) { assertThat(files.count()).isZero(); }
@@ -164,13 +315,15 @@ class WebFlowTest {
                 .andExpect(content().string(containsString("Secuencia 1")));
         var entry = workflow.reader(novelId).getFirst();
         mvc.perform(get(base + "/entries/" + entry.id + "/image").session(session)).andExpect(status().isOk())
-                .andExpect(content().string(containsString("DEMO")));
+                .andExpect(content().contentType("image/png"));
         assertThat(workflow.reader(novelId)).hasSize(1);
         try (var files = Files.list(storage)) { assertThat(files.count()).isEqualTo(1); }
         mvc.perform(form(base + "/chunks/propose").param("limit", "500"))
                 .andExpect(status().isBadRequest()).andExpect(content().string(containsString("ya estan confirmados")));
         assertThat(workflow.panels(novelId)).hasSize(1);
-        mvc.perform(form(base + "/studio/" + draftId + "/generate")).andExpect(status().is3xxRedirection());
+        mvc.perform(multipart(base + "/studio/" + draftId + "/upload").file(image()).session(session)
+                .param("_csrf", session.getAttribute("csrf").toString()).param("prompt", "La viajera en el anden, amanecer."))
+                .andExpect(status().is3xxRedirection());
         long rejected = workflow.candidates(novelId).getFirst().id;
         mvc.perform(form(base + "/candidates/" + rejected + "/reject")).andExpect(status().is3xxRedirection());
         mvc.perform(form(base + "/candidates/" + rejected + "/approve")).andExpect(status().isBadRequest());
@@ -194,6 +347,10 @@ class WebFlowTest {
         mvc.perform(multipart("/novels").file(file).session(session).param("title", "Invalid")
                 .param("_csrf", session.getAttribute("csrf").toString()))
                 .andExpect(status().isBadRequest()).andExpect(content().string(containsString("UTF-8 valido")));
+        var oversized = new MockMultipartFile("file", "large.txt", "text/plain", new byte[2_000_001]);
+        mvc.perform(multipart("/novels").file(oversized).session(session).param("title", "Large")
+                .param("_csrf", session.getAttribute("csrf").toString()))
+                .andExpect(status().isBadRequest()).andExpect(content().string(containsString("limite de 2 MB")));
     }
 
     @Test void characterFormsValidateOwnershipCsrfAndEscapeDescriptions() throws Exception {

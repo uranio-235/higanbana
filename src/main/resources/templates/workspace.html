@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/app.css"><link rel="stylesheet" href="/footer.css"><script src="/vendor/htmx.min.js" defer></script><script src="/vendor/lucide.min.js" defer></script><script src="/app.js" defer></script>
 </head>
 <body hx-boost="true" hx-indicator="#busy">
-<header class="topbar"><a class="brand" href="/">Higanbana<span>ESTUDIO DE MANGA</span></a><div class="environment"><span class="dot"></span><span th:text="${view == 'chunks' ? chunkProvenance : view == 'panels' ? imagePanelPromptProvenance : textProvenance}"></span><span th:unless="${view == 'chunks' or view == 'panels'}" class="tag">Imagen DEMO</span></div></header>
+<header class="topbar"><a class="brand" href="/">Higanbana<span>ESTUDIO DE MANGA</span></a><div class="environment"><span class="dot"></span><span th:text="${view == 'chunks' ? chunkProvenance : view == 'panels' ? imagePanelPromptProvenance : textProvenance}"></span></div></header>
 <div class="shell">
   <aside class="sidebar">
     <p class="eyebrow">PROYECTO LOCAL</p>
@@ -39,7 +39,7 @@
           <div class="file-row"><label for="file"><i data-lucide="file-up" aria-hidden="true"></i> O archivo TXT UTF-8</label><input id="file" name="file" type="file" accept=".txt,text/plain"><small>Maximo 2 MB / 1 000 000 caracteres</small></div>
           <button type="submit"><i data-lucide="plus" aria-hidden="true"></i> Crear novela</button>
         </form>
-        <aside class="library-preview"><img src="/demo.svg" alt="Ilustracion manga demo: viajera ante un paisaje montanoso"><p class="eyebrow">MESA DE TRABAJO</p><h2>Del manuscrito<br>a la secuencia.</h2><span class="tag">Ilustracion local / no IA</span></aside>
+        <aside class="library-preview"><p class="eyebrow">MESA DE TRABAJO</p><h2>Del manuscrito<br>a la secuencia.</h2></aside>
       </div>
       <div class="section-heading"><h2>Obras guardadas</h2></div>
       <p class="empty" th:if="${#lists.isEmpty(novels)}">Todavia no hay novelas.</p>
@@ -111,28 +111,33 @@
     </section>
 
     <section th:if="${view == 'studio'}">
-      <div class="page-heading"><div><p class="eyebrow">04 / DIRECCION VISUAL</p><h1>Estudio</h1></div><span class="tag">1 o 2 paneles por imagen</span></div>
+      <div class="page-heading"><div><p class="eyebrow">04 / DIRECCION VISUAL</p><h1>Estudio</h1></div></div>
+      <p class="notice" role="alert" th:if="${studioError}" th:text="${studioError}"></p>
       <p class="empty" th:if="${#lists.isEmpty(panels)}">No hay paneles confirmados. <a th:href="@{/novels/{id}/panels(id=${novel.id})}">Abrir paneles</a></p>
       <form th:unless="${#lists.isEmpty(panels)}" th:action="@{/novels/{id}/studio(id=${novel.id})}" method="post" class="editor-form" data-panel-selection>
-        <input type="hidden" name="_csrf" th:value="${csrf}"><fieldset><legend>Prompts que formaran la imagen</legend><label class="selection-row" th:each="panel : ${panels}"><input type="checkbox" name="panelIds" th:value="${panel.id}"><span><strong th:text="'Chunk ' + ${panel.chunkPosition} + ' / Panel ' + ${panel.position}"></strong><span th:text="${panel.imagePrompt}"></span></span></label></fieldset>
-        <p class="selection-count muted" aria-live="polite">0 / 2 seleccionados</p>
-        <fieldset th:unless="${#lists.isEmpty(characters)}"><legend>Personajes en escena</legend><label class="selection-row" th:each="character : ${characters}"><input type="checkbox" name="characterIds" th:value="${character.id}"><span><strong th:text="${character.name}"></strong><span th:text="${character.description}"></span></span></label></fieldset>
-        <label for="direction">Ajustes finales opcionales</label><textarea id="direction" name="direction" rows="2" maxlength="1500" placeholder="Ajustar luz, encuadre o composicion sin cambiar la escena..."></textarea>
+        <input type="hidden" name="_csrf" th:value="${csrf}"><fieldset><legend>Prompts que formaran la imagen</legend><label class="selection-row" th:each="panel : ${panels}"><input type="checkbox" name="panelIds" th:value="${panel.id}" th:checked="${selectedPanelIds != null and #lists.contains(selectedPanelIds, panel.id)}" th:attr="data-chunk-id=${panel.chunkId}"><span><strong th:text="'Chunk ' + ${panel.chunkPosition} + ' / Panel ' + ${panel.position}"></strong><span th:text="${panel.imagePrompt}"></span></span></label></fieldset>
+        <p class="selection-count muted" aria-live="polite">0 seleccionados</p>
+        <fieldset th:unless="${#lists.isEmpty(characters)}"><legend>Personajes en escena</legend><label class="selection-row" th:each="character : ${characters}"><input type="checkbox" name="characterIds" th:value="${character.id}" th:checked="${selectedCharacterIds != null and #lists.contains(selectedCharacterIds, character.id)}"><span><strong th:text="${character.name}"></strong><span th:text="${character.description}"></span></span></label></fieldset>
+        <label for="direction">Ajustes finales opcionales</label><textarea id="direction" name="direction" rows="2" maxlength="1500" placeholder="Ajustar luz, encuadre o composicion sin cambiar la escena..." th:text="${studioDirection}"></textarea>
         <button data-selection-submit><i data-lucide="pencil-line" aria-hidden="true"></i> Preparar prompt final</button>
       </form>
       <div class="section-heading"><h2>Prompts finales</h2></div><p th:if="${#lists.isEmpty(drafts)}" class="empty">Ningun prompt preparado todavia.</p>
-      <article class="draft-row" th:each="draft : ${drafts}"><div class="section-heading"><h3 th:text="'Descripcion #' + ${draft.id}"></h3><span class="tag" th:text="${draft.provenance}"></span></div>
-        <details th:if="${!#strings.isEmpty(draft.characterContext)}"><summary>Fichas de personajes guardadas</summary><pre class="source-text" th:text="${draft.characterContext}"></pre></details>
-        <form th:action="@{/novels/{id}/studio/{draft}/save(id=${novel.id},draft=${draft.id})}" method="post"><input type="hidden" name="_csrf" th:value="${csrf}"><label th:for="'prompt-' + ${draft.id}">Prompt final editable</label><textarea th:id="'prompt-' + ${draft.id}" name="prompt" rows="7" maxlength="6000" required th:text="${draft.prompt}"></textarea><button class="secondary"><i data-lucide="save" aria-hidden="true"></i> Guardar prompt</button></form>
-        <form th:action="@{/novels/{id}/studio/{draft}/generate(id=${novel.id},draft=${draft.id})}" method="post" class="action-bar"><input type="hidden" name="_csrf" th:value="${csrf}"><button><i data-lucide="image-plus" aria-hidden="true"></i> Enviar prompt al generador</button></form>
+      <article class="draft-row" th:each="draft : ${drafts}"><div class="section-heading"><h3 th:text="'Descripcion #' + ${draft.id}"></h3><span class="tag" th:text="${draft.provenance}"></span><form th:action="@{/novels/{id}/studio/{draft}/delete(id=${novel.id},draft=${draft.id})}" method="post" hx-confirm="Eliminar esta descripcion? Las imagenes asociadas se conservaran."><input type="hidden" name="_csrf" th:value="${csrf}"><button type="submit" class="secondary icon-button" title="Eliminar descripcion" th:aria-label="'Eliminar descripcion ' + ${draft.id}"><i data-lucide="trash-2" aria-hidden="true"></i></button></form></div>
+        <form th:action="@{/novels/{id}/studio/{draft}/upload(id=${novel.id},draft=${draft.id})}" method="post" enctype="multipart/form-data" hx-boost="false" data-image-upload><input type="hidden" name="_csrf" th:value="${csrf}">
+          <label th:for="'prompt-' + ${draft.id}">Prompt final editable</label><textarea th:id="'prompt-' + ${draft.id}" name="prompt" rows="7" maxlength="41000" required th:text="${draft.prompt}"></textarea>
+          <details th:if="${!#strings.isEmpty(draft.characterContext)}"><summary>Fichas de personajes guardadas</summary><pre class="source-text" data-character-context th:text="${draft.characterContext}"></pre></details>
+          <div class="action-bar"><button type="submit" class="secondary" formnovalidate th:formaction="@{/novels/{id}/studio/{draft}/save(id=${novel.id},draft=${draft.id})}"><i data-lucide="save" aria-hidden="true"></i> Guardar prompt</button><button type="button" class="secondary" data-copy-prompt><i data-lucide="copy" aria-hidden="true"></i> Copiar prompt completo</button><span data-copy-status role="status"></span></div>
+          <label th:for="'image-' + ${draft.id}">Imagen generada (PNG o JPEG, maximo 20 MB)</label><input th:id="'image-' + ${draft.id}" type="file" name="image" accept="image/png,image/jpeg" required>
+          <button><i data-lucide="upload" aria-hidden="true"></i> Subir imagen para revision</button>
+        </form>
       </article>
     </section>
 
     <section th:if="${view == 'generation'}">
-      <div class="page-heading"><div><p class="eyebrow">05 / REVISION DE IMAGENES</p><h1>Generacion</h1></div><span class="tag">Imagenes DEMO / no IA</span></div>
+      <div class="page-heading"><div><p class="eyebrow">05 / REVISION DE IMAGENES</p><h1>Generacion</h1></div></div>
       <p class="empty" th:if="${#lists.isEmpty(candidates)}">Sin candidatos. <a th:href="@{/novels/{id}/studio(id=${novel.id})}">Abrir estudio</a></p>
       <div class="candidate-grid"><article class="candidate" th:each="candidate : ${candidates}">
-        <img th:unless="${candidate.state.name() == 'REJECTED'}" th:src="@{/novels/{id}/candidates/{candidate}/image(id=${novel.id},candidate=${candidate.id})}" th:alt="'Ilustracion demo del candidato ' + ${candidate.id}">
+        <img th:unless="${candidate.state.name() == 'REJECTED'}" th:src="@{/novels/{id}/candidates/{candidate}/image(id=${novel.id},candidate=${candidate.id})}" th:alt="'Imagen del candidato ' + ${candidate.id}">
         <div class="rejected-image" th:if="${candidate.state.name() == 'REJECTED'}"><i data-lucide="image-off" aria-hidden="true"></i> Imagen descartada</div>
         <div class="candidate-content"><div class="section-heading"><h2 th:text="'Candidato #' + ${candidate.id}"></h2><span class="tag" th:classappend="${candidate.state.name() == 'APPROVED'} ? 'approved'" th:text="${candidate.state.name() == 'PENDING' ? 'Pendiente' : candidate.state.name() == 'APPROVED' ? 'Aprobado' : 'Rechazado'}"></span></div>
           <p class="muted" th:text="${candidate.provenance}"></p><details><summary>Descripcion usada</summary><p class="source-text" th:text="${candidate.prompt}"></p></details>

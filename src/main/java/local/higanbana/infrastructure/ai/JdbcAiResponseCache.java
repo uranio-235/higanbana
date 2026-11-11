@@ -23,6 +23,11 @@ public class JdbcAiResponseCache implements AiResponseCache {
     }
 
     @Override
+    public void evict(String key) {
+        jdbc.update("DELETE FROM ai_response_cache WHERE cache_key = ?", key);
+    }
+
+    @Override
     public synchronized void store(String key, String operation, String provider, String model, String promptVersion,
                       String response, Duration ttl) {
         if (ttl.isZero() || ttl.isNegative()) {

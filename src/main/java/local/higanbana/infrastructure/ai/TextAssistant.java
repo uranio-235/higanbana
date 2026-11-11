@@ -12,9 +12,13 @@ import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.DefaultResponseErrorHandler;
+import org.springframework.web.client.RestClientResponseException;
 import org.springframework.retry.support.RetryTemplate;
 import local.higanbana.domain.Chunking;
 import local.higanbana.domain.ai.AiResponseCache;
+import local.higanbana.domain.ai.CachedText;
+import local.higanbana.domain.ai.TextProviderException;
 
 import java.io.IOException;
 import java.security.MessageDigest;
@@ -29,7 +33,7 @@ import java.util.function.Predicate;
 
 @Component
 public class TextAssistant {
-    private static final String PROMPT_VERSION = "2026-11-10-v2";
+    private static final String PROMPT_VERSION = "2026-11-11-manga-v5";
     private static final double TEMPERATURE = 0.5;
     private static final int MAX_TOKENS = 1800;
     private final String mode;
@@ -40,6 +44,8 @@ public class TextAssistant {
     private final AiResponseCache cache;
     private final Duration cacheTtl;
     private final Object[] cacheLocks = new Object[64];
+        private final java.util.concurrent.atomic.AtomicInteger studioSeed = new java.util.concurrent.atomic.AtomicInteger(
+            java.util.concurrent.ThreadLocalRandom.current().nextInt(Integer.MAX_VALUE));
 
     public TextAssistant(@Value("${app.text-mode:demo}") String mode,
                          @Value("${app.nvidia.base-url}") String baseUrl,
@@ -66,11 +72,16 @@ public class TextAssistant {
                 throw new IllegalArgumentException("NVIDIA requiere API key, modelo de texto y endpoint HTTPS.");
             }
             var api = OpenAiApi.builder().baseUrl(baseUrl).apiKey(key)
-                    .restClientBuilder(restClientBuilder).build();
+                    .restClientBuilder(restClientBuilder)
+                    .responseErrorHandler(new DefaultResponseErrorHandler()).build();
+                var options = OpenAiChatOptions.builder().model(modelName)
+                    .temperature(TEMPERATURE).maxTokens(MAX_TOKENS);
+                if (modelName.equals("nvidia/nemotron-3.5-lightning-30b-a3b")) {
+                options.reasoningEffort("none");
+                }
             this.model = OpenAiChatModel.builder().openAiApi(api)
                     .retryTemplate(RetryTemplate.builder().maxAttempts(1).build())
-                    .defaultOptions(OpenAiChatOptions.builder().model(modelName)
-                            .temperature(TEMPERATURE).maxTokens(MAX_TOKENS).build()).build();
+                    .defaultOptions(options.build()).build();
         } else {
             this.model = null;
         }
@@ -181,9 +192,17 @@ public class TextAssistant {
         }
         String response = call("A partir del fragmento narrativo, genera exactamente " + count
                 + " prompts independientes para generar imagenes de panel manga. "
+            + "Cada prompt debe pedir explicitamente una viñeta de manga japones en blanco y negro, "
+            + "con dibujo a tinta, lineas expresivas, contraste y sombras con tramas de semitonos. "
+            + "Describe una composicion narrativa legible, un instante preciso y el encuadre que mejor transmita la escena. "
+            + "No pidas fotografia, render 3D, color, portada, collage ni una pagina de varias viñetas. "
                 + "Cada prompt debe describir una imagen visual concreta: accion y personajes presentes, "
                 + "expresion y pose, encuadre/composicion y entorno pertinente. "
-                + "Conserva los hechos del fragmento, no inventes eventos ni dialogo escrito en la imagen. "
+                + "Incluye los detalles visuales concretos del fragmento pertinentes a ese instante: "
+                + "apariencia y ropa, objetos, disposicion del lugar, clima, iluminacion y ambiente cuando se describan. "
+                + "No sustituyas esos detalles por escenarios, vestuario o personajes genericos. "
+            + "Conserva los hechos del fragmento y la identidad de los personajes; no inventes eventos. "
+            + "No incluyas texto, letras, globos de dialogo, subtitulos, logotipos ni marcas de agua en la imagen. "
                 + "Cada prompt debe entenderse por si solo y no referirse a otros paneles. "
                 + "Devuelve SOLO JSON {\"panels\":[\"prompt visual\"]}; cada prompt en espanol, "
                 + "maximo 1500 caracteres. Sin Markdown.",
@@ -199,8 +218,53 @@ public class TextAssistant {
         }
     }
 
+    public CachedText studioPrompt(String context) {
+        if (model == null) {
+            throw new TextProviderException("Preparar el prompt final requiere NVIDIA y un modelo de texto configurados.");
+        }
+        CachedText response = callCached("Redacta un prompt final en español para generar una imagen de manga. "
+                + "Respeta exactamente el numero y orden de las viñetas seleccionadas, su accion, personajes y detalles visuales. "
+                + "Usa el texto original solo como referencia, sin añadir escenas ni inventar personajes. "
+                + "Conserva las instrucciones de estilo y la direccion visual del usuario. "
+                + "Devuelve SOLO JSON {\"prompt\":\"prompt final\"}, sin Markdown, maximo 10000 caracteres.",
+                context, "", "studio-image-prompt-v1", this::validStudioPrompt, 34000);
+        try {
+            String prompt = Optional.ofNullable(mapper.readTree(response.text()))
+                    .map(root -> root.get("prompt"))
+                    .filter(JsonNode::isTextual)
+                    .map(JsonNode::textValue)
+                    .filter(value -> !value.isBlank() && value.length() <= 10000)
+                    .orElseThrow(IllegalArgumentException::new);
+            return new CachedText(prompt, response.cacheKey());
+        } catch (IOException exception) {
+            throw new IllegalArgumentException("NVIDIA devolvio un prompt final no valido.", exception);
+        }
+    }
+
+    public void evictCachedResponse(String key) {
+        if (key == null || key.isBlank()) { return; }
+        synchronized (cacheLocks[Math.floorMod(key.hashCode(), cacheLocks.length)]) {
+            cache.evict(key);
+        }
+    }
+
+    private boolean validStudioPrompt(String response) {
+        try {
+            return Optional.ofNullable(mapper.readTree(response)).map(root -> root.get("prompt"))
+                    .filter(JsonNode::isTextual).map(JsonNode::textValue)
+                    .filter(value -> !value.isBlank() && value.length() <= 10000).isPresent();
+        } catch (IOException exception) {
+            return false;
+        }
+    }
+
     private String call(String task, String context, String revision, String operation, Predicate<String> validator) {
-        if (context.length() > 8000 || (revision != null && revision.length() > 1500)) {
+        return callCached(task, context, revision, operation, validator, 8000).text();
+    }
+
+    private CachedText callCached(String task, String context, String revision, String operation,
+                                  Predicate<String> validator, int contextLimit) {
+        if (context.length() > contextLimit || (revision != null && revision.length() > 1500)) {
             throw new IllegalArgumentException("Contexto demasiado grande para una solicitud de texto.");
         }
         try {
@@ -220,24 +284,30 @@ public class TextAssistant {
             synchronized (cacheLocks[Math.floorMod(key.hashCode(), cacheLocks.length)]) {
                 Optional<String> cached = cache.find(key).filter(validator);
                 if (cached.isPresent()) {
-                    return cached.orElseThrow();
+                    return new CachedText(cached.orElseThrow(), key);
                 }
 
-                Prompt prompt = Prompt.builder().content(requestContent).build();
+                var promptBuilder = Prompt.builder().content(requestContent);
+                if (operation.equals("studio-image-prompt-v1")
+                    && modelName.equals("nvidia/nemotron-3.5-lightning-30b-a3b")) {
+                    promptBuilder.chatOptions(OpenAiChatOptions.builder()
+                            .seed(studioSeed.getAndUpdate(value -> value == Integer.MAX_VALUE ? 0 : value + 1)).build());
+                }
+                Prompt prompt = promptBuilder.build();
                 ChatResponse response = model.call(prompt);
                 String generation = Optional.ofNullable(response)
                         .map(resp -> resp.getResult())
                         .map(gen -> gen.getOutput())
                         .map(output -> output.getText())
                         .filter(text -> !text.isBlank())
-                        .orElseThrow();
+                        .orElseThrow(() -> new TextProviderException(invalidResponseMessage(operation)));
                 if (!validator.test(generation)) {
-                    throw new IllegalArgumentException(invalidResponseMessage(operation));
+                    throw new TextProviderException(invalidResponseMessage(operation));
                 }
 
                 cache.store(key, operation, baseUrl, modelName, PROMPT_VERSION, generation, cacheTtl);
 
-                return generation;
+                return new CachedText(generation, key);
             }
 
         }
@@ -245,10 +315,18 @@ public class TextAssistant {
             if (exception instanceof IllegalArgumentException illegalArgumentException) {
                 throw illegalArgumentException;
             }
-            if (exception instanceof RuntimeException runtimeException) {
-                throw new IllegalArgumentException("Palo " + runtimeException.getMessage(), runtimeException);
+            if (exception instanceof RestClientResponseException responseException) {
+                int status = responseException.getStatusCode().value();
+                String message = switch (status) {
+                    case 401, 403 -> "NVIDIA rechazo las credenciales o el acceso al modelo. Revisa la configuracion.";
+                    case 429 -> "NVIDIA ha limitado las solicitudes. Vuelve a intentarlo mas tarde.";
+                    case 503 -> "NVIDIA esta temporalmente sobrecargado. Vuelve a intentarlo mas tarde.";
+                    default -> status >= 500 ? "NVIDIA no esta disponible en este momento. Vuelve a intentarlo mas tarde."
+                            : "NVIDIA rechazo la solicitud. Revisa la configuracion del modelo.";
+                };
+                throw new TextProviderException(message, responseException);
             }
-            throw new IllegalArgumentException("No se pudo consultar o acceder a la cache de NVIDIA.", exception);
+            throw new TextProviderException("No se pudo consultar o acceder a la cache de NVIDIA.", exception);
         }
     }
 
@@ -256,6 +334,7 @@ public class TextAssistant {
         return switch (operation) {
             case "narrative-chunks-v2" -> "NVIDIA devolvio escenas no validas; no se ha guardado una division parcial.";
             case "image-panel-prompts-v1" -> "NVIDIA devolvio prompts de imagen no validos; no se guardo la propuesta.";
+            case "studio-image-prompt-v1" -> "NVIDIA devolvio un prompt final no valido; no se guardo la descripcion. Reintenta o revisa el modelo configurado.";
             default -> "NVIDIA devolvio una descripcion no valida; no se ha guardado en cache.";
         };
     }

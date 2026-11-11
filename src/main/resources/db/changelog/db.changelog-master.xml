@@ -8,4 +8,7 @@
     <include file="changes/004-chunk-plan-confirmation.xml" relativeToChangelogFile="true"/>
     <include file="changes/005-panel-plan-confirmation.xml" relativeToChangelogFile="true"/>
     <include file="changes/006-panel-confirmation-provenance.xml" relativeToChangelogFile="true"/>
+    <include file="changes/007-studio-draft-panels.xml" relativeToChangelogFile="true"/>
+    <include file="changes/008-candidate-panels.xml" relativeToChangelogFile="true"/>
+    <include file="changes/009-studio-cache-key.xml" relativeToChangelogFile="true"/>
 </databaseChangeLog>

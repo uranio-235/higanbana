@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
+    <changeSet id="007-studio-draft-panels" author="higanbana">
+        <createTable tableName="studio_draft_panels">
+            <column name="studio_draft_id" type="BIGINT"><constraints nullable="false" primaryKey="true" primaryKeyName="pk_studio_draft_panels"/></column>
+            <column name="panel_order" type="INTEGER"><constraints nullable="false" primaryKey="true" primaryKeyName="pk_studio_draft_panels"/></column>
+            <column name="panel_id" type="BIGINT"><constraints nullable="false"/></column>
+        </createTable>
+    </changeSet>
+</databaseChangeLog>

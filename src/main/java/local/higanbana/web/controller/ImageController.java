@@ -1,7 +1,6 @@
 package local.higanbana.web.controller;
 
 import local.higanbana.application.Workflow;
-import local.higanbana.infrastructure.image.DemoImageProvider;
 import local.higanbana.infrastructure.image.ImageProvider;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -13,11 +12,8 @@ import org.springframework.web.bind.annotation.ResponseBody;
 @Controller
 public class ImageController {
     private final Workflow workflow;
-    private final DemoImageProvider demo;
-
-    public ImageController(Workflow workflow, DemoImageProvider demo) {
+    public ImageController(Workflow workflow) {
         this.workflow = workflow;
-        this.demo = demo;
     }
 
     @GetMapping("/novels/{novelId}/candidates/{candidateId}/image") @ResponseBody
@@ -30,7 +26,6 @@ public class ImageController {
         return image(workflow.entryImage(novelId, entryId));
     }
 
-    @GetMapping("/demo.svg") @ResponseBody public ResponseEntity<byte[]> demo() { return image(demo.generate("Higanbana")); }
     @GetMapping("/health") @ResponseBody public String health() { return "ok"; }
 
     private ResponseEntity<byte[]> image(ImageProvider.ImageResult image) {
