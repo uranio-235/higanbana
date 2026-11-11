@@ -57,7 +57,9 @@ certificate/proxy for PowerShell first.
    that description; later edits do not change existing candidates. Approve or
    reject explicitly. Approval is idempotent. An already covered panel cannot be
    approved again through another candidate. Approved images cannot be rejected.
-6. **Lector**: only approved images appear, in narrative order, with download links.
+6. **Lector**: only approved images appear, in narrative order, with download links
+   and an on-demand PDF download (one approved image per page). Multi-panel
+   compositions stay intact; the exporter does not guess panel crop boundaries.
 
 **Personajes** is available in the novel sidebar independently of these six stages.
 Each novel owns its character sheets through JPA `OneToMany` / `ManyToOne` with a
@@ -203,12 +205,13 @@ Pinned, resolvable Maven Central releases:
 | Spring AI | 1.1.0 (documented Boot 3.4/3.5 compatibility) |
 | Maven / Wrapper plugin | 3.9.11 / 3.3.4, official only-script wrapper |
 | DuckDB JDBC / engine | 2.0.0.1 / 2.0.0.1 |
+| PDFBox / Batik | 3.0.8 / 1.20 |
 | Hibernate | 6.6.33.Final, Boot-managed |
 | Liquibase / H2 (tests only) | 4.31.1 / 2.3.232, Boot-managed |
 | HTMX / Lucide | 2.0.4 / 0.468.0, vendored with licenses |
 
-The POM includes MVC, Thymeleaf, Validation, Data JPA, DuckDB JDBC, Liquibase/H2
-for tests, Spring AI OpenAI, and Boot test support.
+The POM includes MVC, Thymeleaf, Validation, Data JPA, DuckDB JDBC, PDFBox/Batik,
+Liquibase/H2 for tests, Spring AI OpenAI, and Boot test support.
 
 `./mvnw.cmd clean verify` runs lossless segmentation tests, service state/selection
 tests, a complete seven-screen MockMvc/H2 workflow, DuckDB JPA startup and sequence
@@ -232,7 +235,8 @@ These are database checks, not a claim of live NVIDIA/image inference verificati
   `ReviewState`. `Novel` owns `NovelCharacter`; chunk confirmation is an immutable
   child marker to avoid DuckDB's parent-update/foreign-key constraint.
 - `src/main/java/local/higanbana/application/Workflow.java`: transactional
-  application workflow, ownership/state checks, and local approval storage.
+  application workflow and ownership/state checks; approved images go through
+  the `ApprovedImageStorage` port and its filesystem adapter.
 - `src/main/resources/db/duckdb/schema.sql`: active DuckDB tables and indexes.
 - `src/main/java/local/higanbana/infrastructure/ai`: NVIDIA client and persistent
   validated-response cache; `JdbcAiResponseCache` is backed by DuckDB JDBC.
@@ -240,6 +244,11 @@ These are database checks, not a claim of live NVIDIA/image inference verificati
   text provider and bounded narrative segmentation.
 - `src/main/java/local/higanbana/infrastructure/image`: image-provider contract
   and current demo adapter.
+- `src/main/java/local/higanbana/application/MangaPdfExportService.java` and
+  `src/main/java/local/higanbana/infrastructure/pdf`: on-demand PDF export using
+  PDFBox; approved SVG panels are rasterized with Batik.
+- `src/main/java/local/higanbana/domain/export/MangaPdfGenerator.java`: the PDF
+  generation port used by the PDFBox adapter.
 - `src/main/java/local/higanbana/web/controller`: workspace, character, chunk,
   panel, studio, generation, and image controllers; route URLs remain unchanged.
 - `src/main/java/local/higanbana/web/dto` and `web/error`: form DTOs and global

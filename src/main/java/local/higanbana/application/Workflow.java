@@ -9,8 +9,6 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import javax.imageio.ImageIO;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -21,6 +19,7 @@ import local.higanbana.infrastructure.ai.TextAssistant;
 import local.higanbana.infrastructure.image.ImageProvider;
 import local.higanbana.domain.ReviewState;
 import local.higanbana.domain.entity.*;
+import local.higanbana.domain.image.ApprovedImageStorage;
 import local.higanbana.domain.workflow.WorkflowRepository;
 
 @Service
@@ -28,15 +27,14 @@ import local.higanbana.domain.workflow.WorkflowRepository;
 public class Workflow {
     private final WorkflowRepository repository;
     private final TextAssistant text;
-    private final Path mangaDirectory;
+    private final ApprovedImageStorage imageStorage;
     private final int analysisWindow;
 
-    public Workflow(WorkflowRepository repository, TextAssistant text,
-                    @Value("${app.manga-dir}") String mangaDirectory,
+    public Workflow(WorkflowRepository repository, TextAssistant text, ApprovedImageStorage imageStorage,
                     @Value("${app.chunks.analysis-window-chars:5000}") int analysisWindow) {
         this.repository = repository;
         this.text = text;
-        this.mangaDirectory = Path.of(mangaDirectory).toAbsolutePath().normalize();
+        this.imageStorage = imageStorage;
         if (analysisWindow < 200 || analysisWindow > 5000) {
             throw new IllegalArgumentException("app.chunks.analysis-window-chars debe estar entre 200 y 5000.");
         }
@@ -433,18 +431,15 @@ public class Workflow {
         }
         String extension = switch (candidate.mediaType) { case "image/svg+xml" -> ".svg"; case "image/png" -> ".png"; default -> ".jpg"; };
         String filename = UUID.randomUUID() + extension;
-        Path destination = mangaDirectory.resolve(filename);
         try {
-            Files.createDirectories(mangaDirectory);
-            Files.write(destination, candidate.image);
+            imageStorage.save(filename, candidate.image);
         } catch (IOException exception) {
-            try { Files.deleteIfExists(destination); } catch (IOException ignored) {}
-            throw new IllegalStateException("No se pudo guardar la imagen aprobada en el almacenamiento local.");
+            throw new IllegalStateException("No se pudo guardar la imagen aprobada en el almacenamiento local.", exception);
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override public void afterCompletion(int status) {
                 if (status != STATUS_COMMITTED) {
-                    try { Files.deleteIfExists(destination); } catch (IOException ignored) {}
+                    try { imageStorage.delete(filename); } catch (IOException ignored) {}
                 }
             }
         });
@@ -483,7 +478,7 @@ public class Workflow {
         MangaEntry entry = required(repository.findEntry(entryId));
         owned(entry.novelId, novelId);
         try {
-            return new ImageProvider.ImageResult(Files.readAllBytes(mangaDirectory.resolve(entry.filename)), entry.mediaType, entry.provenance);
+            return new ImageProvider.ImageResult(imageStorage.read(entry.filename), entry.mediaType, entry.provenance);
         } catch (IOException exception) {
             throw new IllegalStateException("No se encuentra la imagen aprobada en el disco local.");
         }

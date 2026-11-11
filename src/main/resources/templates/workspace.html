@@ -147,7 +147,7 @@
     </section>
 
     <section th:if="${view == 'reader'}">
-      <div class="page-heading"><div><p class="eyebrow">06 / MANGA APROBADO</p><h1 th:text="${novel.title}"></h1></div><span class="tag" th:text="${#lists.size(entries)} + ' imagenes'"></span></div>
+      <div class="page-heading"><div><p class="eyebrow">06 / MANGA APROBADO</p><h1 th:text="${novel.title}"></h1></div><div class="heading-actions"><span class="tag" th:text="${#lists.size(entries)} + ' imagenes'"></span> <a class="button secondary" th:if="${!#lists.isEmpty(entries)}" th:href="@{/novels/{id}/reader.pdf(id=${novel.id})}" hx-boost="false">Descargar PDF <i data-lucide="download" aria-hidden="true"></i></a></div></div>
       <p class="empty" th:if="${#lists.isEmpty(entries)}">Todavia no hay imagenes aprobadas. <a th:href="@{/novels/{id}/generation(id=${novel.id})}">Revisar candidatos</a></p>
       <div class="reader"><figure th:each="entry,stat : ${entries}"><img th:src="@{/novels/{id}/entries/{entry}/image(id=${novel.id},entry=${entry.id})}" th:alt="${entry.caption}"><figcaption><span th:text="'Secuencia ' + ${stat.count}"></span><span th:text="${entry.provenance}"></span><a th:href="@{/novels/{id}/entries/{entry}/image(id=${novel.id},entry=${entry.id})}" th:download="${entry.filename}" title="Descargar imagen" aria-label="Descargar imagen" hx-boost="false"><i data-lucide="download" aria-hidden="true"></i></a></figcaption></figure></div>
     </section>

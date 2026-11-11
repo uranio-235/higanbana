@@ -14,6 +14,8 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.pdmodel.PDDocument;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -307,15 +309,25 @@ class WebFlowTest {
                 .andExpect(status().isOk()).andExpect(content().contentType("image/png"));
         mvc.perform(get(base + "/reader").session(session)).andExpect(status().isOk())
                 .andExpect(content().string(containsString("Todavia no hay imagenes aprobadas")));
+        mvc.perform(get(base + "/reader.pdf").session(session)).andExpect(status().isConflict());
         try (var files = Files.list(storage)) { assertThat(files.count()).isZero(); }
         mvc.perform(form(base + "/candidates/" + candidateId + "/approve")).andExpect(status().is3xxRedirection());
         mvc.perform(form(base + "/candidates/" + candidateId + "/approve")).andExpect(status().is3xxRedirection());
         mvc.perform(get(base + "/generation").session(session)).andExpect(status().isOk());
         mvc.perform(get(base + "/reader").session(session)).andExpect(status().isOk())
-                .andExpect(content().string(containsString("Secuencia 1")));
+                .andExpect(content().string(containsString("Secuencia 1")))
+                .andExpect(content().string(containsString("Descargar PDF")));
         var entry = workflow.reader(novelId).getFirst();
         mvc.perform(get(base + "/entries/" + entry.id + "/image").session(session)).andExpect(status().isOk())
                 .andExpect(content().contentType("image/png"));
+        byte[] pdfBytes = mvc.perform(get(base + "/reader.pdf").session(session))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType("application/pdf"))
+                .andExpect(header().string("Content-Disposition", containsString("attachment")))
+                .andReturn().getResponse().getContentAsByteArray();
+        try (PDDocument pdf = Loader.loadPDF(pdfBytes)) {
+            assertThat(pdf.getNumberOfPages()).isEqualTo(1);
+        }
         assertThat(workflow.reader(novelId)).hasSize(1);
         try (var files = Files.list(storage)) { assertThat(files.count()).isEqualTo(1); }
         mvc.perform(form(base + "/chunks/propose").param("limit", "500"))
