@@ -1,6 +1,5 @@
 package local.higanbana.application;
 
-import jakarta.persistence.EntityManager;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -16,23 +15,26 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import local.higanbana.infrastructure.ai.TextAssistant;
 import local.higanbana.infrastructure.image.ImageProvider;
-import local.higanbana.domain.*;
+import local.higanbana.domain.ReviewState;
+import local.higanbana.domain.entity.*;
+import local.higanbana.domain.workflow.WorkflowRepository;
 
 @Service
 @Transactional
 public class Workflow {
-    private final EntityManager em;
+    private final WorkflowRepository repository;
     private final TextAssistant text;
     private final Path mangaDirectory;
     private final int analysisWindow;
 
-    public Workflow(EntityManager em, TextAssistant text,
+    public Workflow(WorkflowRepository repository, TextAssistant text,
                     @Value("${app.manga-dir}") String mangaDirectory,
                     @Value("${app.chunks.analysis-window-chars:5000}") int analysisWindow) {
-        this.em = em;
+        this.repository = repository;
         this.text = text;
         this.mangaDirectory = Path.of(mangaDirectory).toAbsolutePath().normalize();
         if (analysisWindow < 200 || analysisWindow > 5000) {
@@ -48,10 +50,10 @@ public class Workflow {
     public String imagePanelPromptProvenance() { return text.imagePanelPromptProvenance(); }
 
     public List<Novel> novels() {
-        return em.createQuery("from Novel order by id desc", Novel.class).getResultList();
+        return repository.findNovels();
     }
 
-    public Novel novel(long novelId) { return required(Novel.class, novelId); }
+    public Novel novel(long novelId) { return required(repository.findNovel(novelId)); }
 
     public Novel createNovel(String title, String source) {
         validText(title, 160, "Titulo");
@@ -59,25 +61,23 @@ public class Workflow {
         Novel novel = new Novel();
         novel.title = title.strip();
         novel.source = source;
-        em.persist(novel);
+        repository.saveNovel(novel);
         return novel;
     }
 
     public ChunkPlan chunkPlan(long novelId) {
         novel(novelId);
-        var plans = em.createQuery("from ChunkPlan where novelId=:novel", ChunkPlan.class)
-                .setParameter("novel", novelId).getResultList();
+        var plans = repository.findChunkPlans(novelId);
         if (plans.isEmpty()) { return null; }
         ChunkPlan plan = plans.getFirst();
         plan.segments.size();
-        plan.confirmed = em.find(ChunkPlanConfirmation.class, plan.id) != null;
+        plan.confirmed = repository.findChunkPlanConfirmation(plan.id).isPresent();
         return plan;
     }
 
     public List<NovelCharacter> characters(long novelId) {
         novel(novelId);
-        return em.createQuery("from NovelCharacter where novel.id=:novel order by id", NovelCharacter.class)
-                .setParameter("novel", novelId).getResultList();
+        return repository.findCharacters(novelId);
     }
 
     public NovelCharacter addCharacter(long novelId, String name, String description) {
@@ -88,7 +88,7 @@ public class Workflow {
         character.name = name.strip();
         character.description = description.strip();
         novel.addCharacter(character);
-        em.persist(character);
+        repository.saveCharacter(character);
         return character;
     }
 
@@ -107,19 +107,17 @@ public class Workflow {
     }
 
     private NovelCharacter character(long novelId, long characterId) {
-        return em.createQuery("from NovelCharacter where id=:id and novel.id=:novel", NovelCharacter.class)
-                .setParameter("id", characterId).setParameter("novel", novelId).getResultStream().findFirst()
+        return repository.findCharacter(novelId, characterId)
                 .orElseThrow(() -> new IllegalArgumentException("El personaje no pertenece a esta novela."));
     }
 
     public List<Chunk> chunks(long novelId) {
         novel(novelId);
-        return em.createQuery("from Chunk where novelId=:novel order by position", Chunk.class)
-                .setParameter("novel", novelId).getResultList();
+        return repository.findChunks(novelId);
     }
 
     public Chunk chunk(long novelId, long chunkId) {
-        Chunk chunk = required(Chunk.class, chunkId);
+        Chunk chunk = required(repository.findChunk(chunkId));
         owned(chunk.novelId, novelId);
         return chunk;
     }
@@ -140,7 +138,7 @@ public class Workflow {
         if (plan == null) {
             plan = new ChunkPlan();
             plan.novelId = novelId;
-            em.persist(plan);
+            repository.saveChunkPlan(plan);
         }
         plan.chunkLimit = limit;
         plan.segments.clear();
@@ -160,24 +158,22 @@ public class Workflow {
             chunk.novelId = novelId;
             chunk.position = index + 1;
             chunk.content = plan.segments.get(index);
-            em.persist(chunk);
+            repository.saveChunk(chunk);
         }
-        em.persist(new ChunkPlanConfirmation(plan.id));
+        repository.saveChunkPlanConfirmation(new ChunkPlanConfirmation(plan.id));
         plan.confirmed = true;
     }
 
     public PanelPlan panelPlan(long novelId, long chunkId) {
         chunk(novelId, chunkId);
-        var plans = em.createQuery("from PanelPlan where chunkId=:chunk", PanelPlan.class)
-                .setParameter("chunk", chunkId).getResultList();
+        var plans = repository.findPanelPlans(chunkId);
         if (plans.isEmpty()) { return null; }
         PanelPlan plan = plans.getFirst();
         plan.imagePrompts.size();
-        PanelPlanConfirmation confirmation = em.find(PanelPlanConfirmation.class, plan.id);
-        plan.confirmed = confirmation != null;
-        if (confirmation != null && confirmation.provenance != null) {
-            plan.provenance = confirmation.provenance;
-        }
+        Optional<PanelPlanConfirmation> confirmation = repository.findPanelPlanConfirmation(plan.id);
+        plan.confirmed = confirmation.isPresent();
+        confirmation.map(value -> value.provenance).filter(Objects::nonNull)
+                .ifPresent(value -> plan.provenance = value);
         return plan;
     }
 
@@ -193,22 +189,20 @@ public class Workflow {
         List<String> imagePrompts = text.imagePanelPrompts(chunk.content, count, revision);
         validateImagePrompts(imagePrompts, count);
         if (plan != null && plan.confirmed) {
-            List<Panel> savedPanels = em.createQuery("from Panel where chunkId=:chunk order by position", Panel.class)
-                    .setParameter("chunk", chunkId).getResultList();
+            List<Panel> savedPanels = repository.findPanelsByChunk(chunkId);
             if (savedPanels.size() != count) { fail("El plan confirmado no coincide con los paneles guardados."); }
             for (int index = 0; index < count; index++) {
                 savedPanels.get(index).imagePrompt = imagePrompts.get(index);
             }
             plan.imagePrompts.clear();
             plan.imagePrompts.addAll(imagePrompts);
-            PanelPlanConfirmation confirmation = em.find(PanelPlanConfirmation.class, plan.id);
-            if (confirmation == null) { fail("No se encontro la confirmacion del plan de paneles."); }
+            PanelPlanConfirmation confirmation = repository.findPanelPlanConfirmation(plan.id)
+                    .orElseThrow(() -> new IllegalArgumentException("No se encontro la confirmacion del plan de paneles."));
             confirmation.provenance = text.imagePanelPromptProvenance();
             return plan;
         }
         if (plan != null) {
-            em.remove(plan);
-            em.flush();
+            repository.deletePanelPlanAndFlush(plan);
         }
         plan = new PanelPlan();
         plan.novelId = novelId;
@@ -216,7 +210,7 @@ public class Workflow {
         plan.panelCount = count;
         plan.provenance = text.imagePanelPromptProvenance();
         plan.imagePrompts.addAll(imagePrompts);
-        em.persist(plan);
+        repository.savePanelPlan(plan);
         return plan;
     }
 
@@ -246,15 +240,14 @@ public class Workflow {
             panel.chunkPosition = chunk.position;
             panel.position = index + 1;
             panel.imagePrompt = plan.imagePrompts.get(index);
-            em.persist(panel);
+            repository.savePanel(panel);
         }
-        em.persist(new PanelPlanConfirmation(plan.id, plan.provenance));
+        repository.savePanelPlanConfirmation(new PanelPlanConfirmation(plan.id, plan.provenance));
     }
 
     public List<Panel> panels(long novelId) {
         novel(novelId);
-        return em.createQuery("from Panel where novelId=:novel order by chunkPosition, position", Panel.class)
-                .setParameter("novel", novelId).getResultList();
+        return repository.findPanelsByNovel(novelId);
     }
 
     public StudioDraft createDraft(long novelId, List<Long> panelIds, String direction) {
@@ -270,7 +263,7 @@ public class Workflow {
         List<Panel> selected = new ArrayList<>();
         for (Long panelId : panelIds) {
             if (panelId == null) { fail("Panel no valido."); }
-            Panel panel = required(Panel.class, panelId);
+            Panel panel = required(repository.findPanel(panelId));
             owned(panel.novelId, novelId);
             selected.add(panel);
         }
@@ -292,15 +285,18 @@ public class Workflow {
         selectedPrompts.forEach(prompt -> validText(prompt, 1500, "Prompt de imagen del panel"));
         String format = "Dibujo de manga japones en blanco y negro, tinta negra, lineas expresivas, "
                 + "contraste y tramas de semitonos. Composicion narrativa clara; mantener coherentes los personajes "
-                + "y el entorno. Sin color, fotografia, render 3D, texto, letras, globos de dialogo, "
-            + "logotipos ni marcas de agua. Interpretar cualquier color mencionado en las escenas como tonos de gris.\n\n";
+            + "y el entorno. Sin color, fotografia ni render 3D. Incluir globos con los dialogos literales "
+            + "del texto original, asignados al personaje que habla; incluir cartelas rectangulares con fragmentos "
+            + "descriptivos breves y literales cuando correspondan a la viñeta. No inventar ni parafrasear texto, "
+            + "ni añadir rotulos, logotipos o marcas de agua. Dejar sin texto las viñetas sin dialogo o narracion "
+            + "pertinentes. Interpretar cualquier color mencionado en las escenas como tonos de gris.\n\n";
         StringBuilder promptBuilder = new StringBuilder(format)
             .append("Crear una sola imagen manga con exactamente ").append(selectedPrompts.size())
             .append(selectedPrompts.size() == 1 ? " viñeta.\n\n" : " viñetas distintas, en el orden narrativo indicado. Mantener cada accion en su propia viñeta, sin mezclarlas.\n\n");
         for (int index = 0; index < selectedPrompts.size(); index++) {
             promptBuilder.append("Viñeta ").append(index + 1).append(":\n").append(selectedPrompts.get(index)).append("\n\n");
         }
-        promptBuilder.append("Texto original de referencia: conserva los detalles visuales de la novela pertinentes a las viñetas seleccionadas; no añadas escenas que no se hayan seleccionado.\n")
+        promptBuilder.append("Texto original de referencia: conserva los detalles visuales pertinentes y los dialogos y fragmentos descriptivos literales que correspondan a las viñetas seleccionadas; no añadas escenas que no se hayan seleccionado.\n")
             .append(sourceChunk.content);
         String prompt = promptBuilder.toString();
         if (!direction.isBlank()) { prompt += "\n\nDireccion visual adicional: " + direction; }
@@ -319,19 +315,18 @@ public class Workflow {
         draft.characterContext = characterContext;
         draft.aiCacheKey = generated.cacheKey();
         draft.provenance = "Prompts de panel / " + text.imagePanelPromptProvenance();
-        em.persist(draft);
+        repository.saveDraft(draft);
         return draft;
     }
 
     public List<StudioDraft> drafts(long novelId) {
         novel(novelId);
-        return em.createQuery("from StudioDraft where novelId=:novel order by id desc", StudioDraft.class)
-                .setParameter("novel", novelId).getResultList();
+        return repository.findDrafts(novelId);
     }
 
     public void saveDraft(long novelId, long draftId, String prompt) {
         mutableNovel(novelId);
-        StudioDraft draft = required(StudioDraft.class, draftId);
+        StudioDraft draft = required(repository.findDraft(draftId));
         owned(draft.novelId, novelId);
         validText(prompt, 41000, "Descripcion");
         draft.prompt = prompt;
@@ -339,10 +334,9 @@ public class Workflow {
 
     public void deleteDraft(long novelId, long draftId) {
         mutableNovel(novelId);
-        StudioDraft draft = required(StudioDraft.class, draftId);
+        StudioDraft draft = required(repository.findDraft(draftId));
         owned(draft.novelId, novelId);
-        var candidates = em.createQuery("from Candidate where draftId=:draft", Candidate.class)
-                .setParameter("draft", draftId).getResultList();
+        var candidates = repository.findCandidatesByDraft(draftId);
         for (Candidate candidate : candidates) {
             if (candidate.panelIds.isEmpty()) {
                 candidate.panelIds.addAll(draft.panelIds.isEmpty()
@@ -351,12 +345,12 @@ public class Workflow {
             candidate.draftId = null;
         }
         text.evictCachedResponse(draft.aiCacheKey);
-        em.remove(draft);
+        repository.deleteDraft(draft);
     }
 
     public Candidate uploadImage(long novelId, long draftId, byte[] bytes) {
         mutableNovel(novelId);
-        StudioDraft draft = required(StudioDraft.class, draftId);
+        StudioDraft draft = required(repository.findDraft(draftId));
         owned(draft.novelId, novelId);
         validText(draft.prompt, 41000, "Descripcion guardada");
         String imagePrompt = draft.prompt + (draft.characterContext.isEmpty() ? "" : "\n\n" + draft.characterContext);
@@ -390,7 +384,7 @@ public class Workflow {
                 candidate.image = output.toByteArray();
                 candidate.mediaType = format.equals("png") ? "image/png" : "image/jpeg";
                 candidate.provenance = "Imagen subida por el usuario";
-                em.persist(candidate);
+                repository.saveCandidate(candidate);
                 return candidate;
             } finally {
                 reader.dispose();
@@ -402,12 +396,11 @@ public class Workflow {
 
     public List<Candidate> candidates(long novelId) {
         novel(novelId);
-        return em.createQuery("from Candidate where novelId=:novel order by id desc", Candidate.class)
-                .setParameter("novel", novelId).getResultList();
+        return repository.findCandidatesByNovel(novelId);
     }
 
     public Candidate candidate(long novelId, long candidateId) {
-        Candidate candidate = required(Candidate.class, candidateId);
+        Candidate candidate = required(repository.findCandidate(candidateId));
         owned(candidate.novelId, novelId);
         return candidate;
     }
@@ -430,8 +423,10 @@ public class Workflow {
         if (candidate.state != ReviewState.PENDING) { fail("Solo se pueden aprobar candidatos pendientes."); }
         List<Long> candidatePanels = candidatePanels(candidate);
         for (MangaEntry entry : reader(novelId)) {
-            Candidate approved = em.find(Candidate.class, entry.candidateId);
-            List<Long> covered = approved == null ? legacyPanels(entry.firstPanelId, entry.secondPanelId) : candidatePanels(approved);
+            Optional<Candidate> approved = entry.candidateId == null
+                    ? Optional.empty() : repository.findCandidate(entry.candidateId);
+            List<Long> covered = approved.map(this::candidatePanels)
+                    .orElseGet(() -> legacyPanels(entry.firstPanelId, entry.secondPanelId));
             if (candidatePanels.stream().anyMatch(covered::contains)) {
                 fail("Uno de estos paneles ya tiene una imagen aprobada.");
             }
@@ -463,7 +458,7 @@ public class Workflow {
         entry.mediaType = candidate.mediaType;
         entry.provenance = candidate.provenance;
         entry.caption = candidate.prompt;
-        em.persist(entry);
+        repository.saveEntry(entry);
         candidate.state = ReviewState.APPROVED;
         candidate.image = null;
         return entry;
@@ -471,8 +466,7 @@ public class Workflow {
 
     public List<MangaEntry> reader(long novelId) {
         novel(novelId);
-        return em.createQuery("from MangaEntry where novelId=:novel order by narrativeOrder, id", MangaEntry.class)
-                .setParameter("novel", novelId).getResultList();
+        return repository.findEntries(novelId);
     }
 
     public ImageProvider.ImageResult candidateImage(long novelId, long candidateId) {
@@ -486,7 +480,7 @@ public class Workflow {
     }
 
     public ImageProvider.ImageResult entryImage(long novelId, long entryId) {
-        MangaEntry entry = required(MangaEntry.class, entryId);
+        MangaEntry entry = required(repository.findEntry(entryId));
         owned(entry.novelId, novelId);
         try {
             return new ImageProvider.ImageResult(Files.readAllBytes(mangaDirectory.resolve(entry.filename)), entry.mediaType, entry.provenance);
@@ -497,9 +491,11 @@ public class Workflow {
 
     private List<Long> candidatePanels(Candidate candidate) {
         if (!candidate.panelIds.isEmpty()) { return List.copyOf(candidate.panelIds); }
-        StudioDraft draft = candidate.draftId == null ? null : em.find(StudioDraft.class, candidate.draftId);
-        return draft != null && !draft.panelIds.isEmpty()
-                ? List.copyOf(draft.panelIds) : legacyPanels(candidate.firstPanelId, candidate.secondPanelId);
+        Optional<StudioDraft> draft = candidate.draftId == null
+                ? Optional.empty() : repository.findDraft(candidate.draftId);
+        return draft.filter(value -> !value.panelIds.isEmpty())
+                .map(value -> List.copyOf(value.panelIds))
+                .orElseGet(() -> legacyPanels(candidate.firstPanelId, candidate.secondPanelId));
     }
 
     private List<Long> legacyPanels(Long first, Long second) {
@@ -513,10 +509,8 @@ public class Workflow {
         return novel(novelId);
     }
 
-    private <T> T required(Class<T> type, long id) {
-        T entity = em.find(type, id);
-        if (entity == null) { fail("El elemento solicitado no existe."); }
-        return entity;
+    private <T> T required(Optional<T> entity) {
+        return entity.orElseThrow(() -> new IllegalArgumentException("El elemento solicitado no existe."));
     }
 
     private void owned(Long actualNovelId, long novelId) {

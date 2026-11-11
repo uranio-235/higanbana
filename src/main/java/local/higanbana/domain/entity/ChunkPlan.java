@@ -1,4 +1,4 @@
-package local.higanbana.domain;
+package local.higanbana.domain.entity;
 
 import jakarta.persistence.ElementCollection;
 import jakarta.persistence.CollectionTable;

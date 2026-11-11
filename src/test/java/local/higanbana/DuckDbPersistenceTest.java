@@ -1,13 +1,13 @@
 package local.higanbana;
 
 import local.higanbana.application.Workflow;
-import local.higanbana.domain.Novel;
-import local.higanbana.domain.ChunkPlan;
-import local.higanbana.domain.Chunk;
-import local.higanbana.domain.Panel;
-import local.higanbana.domain.PanelPlan;
-import local.higanbana.domain.PanelPlanConfirmation;
-import local.higanbana.infrastructure.ai.JdbcAiResponseCache;
+import local.higanbana.domain.entity.Novel;
+import local.higanbana.domain.entity.ChunkPlan;
+import local.higanbana.domain.entity.Chunk;
+import local.higanbana.domain.entity.Panel;
+import local.higanbana.domain.entity.PanelPlan;
+import local.higanbana.domain.entity.PanelPlanConfirmation;
+import local.higanbana.infrastructure.ai.JpaAiResponseCache;
 import local.higanbana.infrastructure.ai.TextAssistant;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -37,7 +37,7 @@ class DuckDbPersistenceTest {
 
     @Autowired DataSource dataSource;
     @Autowired Workflow workflow;
-    @Autowired JdbcAiResponseCache cache;
+    @Autowired JpaAiResponseCache cache;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager em;
     @MockitoSpyBean TextAssistant text;
@@ -202,7 +202,7 @@ class DuckDbPersistenceTest {
         var candidate = workflow.uploadImage(novel.id, draft.id, output.toByteArray());
         em.flush();
         em.clear();
-        assertThat(em.find(local.higanbana.domain.StudioDraft.class, draft.id).panelIds)
+        assertThat(em.find(local.higanbana.domain.entity.StudioDraft.class, draft.id).panelIds)
                 .containsExactlyElementsOf(panels.stream().map(panel -> panel.id).toList());
         workflow.approve(novel.id, candidate.id);
         em.flush();

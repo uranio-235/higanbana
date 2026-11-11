@@ -11,4 +11,5 @@
     <include file="changes/007-studio-draft-panels.xml" relativeToChangelogFile="true"/>
     <include file="changes/008-candidate-panels.xml" relativeToChangelogFile="true"/>
     <include file="changes/009-studio-cache-key.xml" relativeToChangelogFile="true"/>
+    <include file="changes/010-ai-response-cache-varchar.xml" relativeToChangelogFile="true"/>
 </databaseChangeLog>

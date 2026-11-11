@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
+    <changeSet id="010-ai-response-cache-varchar" author="higanbana" dbms="h2">
+        <modifyDataType tableName="ai_response_cache" columnName="response" newDataType="VARCHAR(1000000000)"/>
+    </changeSet>
+</databaseChangeLog>

@@ -31,6 +31,13 @@
   DTOs and cross-cutting web error handling in `web/dto` and `web/error`.
 - Keep provider clients and storage adapters in `infrastructure`, implementing
   their domain interfaces; keep framework configuration in `config`.
+- In `infrastructure.persistence`, name each Spring Data interface after its
+  domain entity as `<Entity>Repository` and declare custom queries there with
+  `@Query`. Name its JPA-facing adapter `<Entity>JPA`. Spring Data generates the
+  repository implementation; the adapter delegates to it rather than
+  implementing `JpaRepository` itself.
+- Name a JPA adapter for a cross-entity domain port after that port's subject
+  with the `JPA` suffix, for example `WorkflowJPA`.
 - Do not move business rules into controllers or add unrelated endpoints to a
   generic controller just to share a file.
 

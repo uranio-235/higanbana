@@ -13,7 +13,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import local.higanbana.domain.*;
+import local.higanbana.domain.ReviewState;
+import local.higanbana.domain.entity.*;
 import local.higanbana.domain.Chunking;
 import local.higanbana.application.Workflow;
 import local.higanbana.infrastructure.ai.TextAssistant;
@@ -117,7 +118,7 @@ class WorkflowTest {
     }
 
     @Test void confirmedImagePanelPromptIsThePromptSentToImageGeneration() {
-        Novel novel = workflow.createNovel("Prompt de panel", "Aiko abre la puerta del faro.");
+        Novel novel = workflow.createNovel("Prompt de panel", "Aiko dice: «Espera, Rin». La lluvia golpea la puerta del faro.");
         workflow.proposeChunks(novel.id, 5000, "");
         workflow.confirmChunks(novel.id);
         Chunk chunk = workflow.chunks(novel.id).getFirst();
@@ -131,7 +132,9 @@ class WorkflowTest {
         assertThat(panel.imagePrompt).isEqualTo(generated);
 
         StudioDraft draft = workflow.createDraft(novel.id, List.of(panel.id), "Luz fria");
-        assertThat(draft.prompt).contains(generated, "Luz fria", "manga japones en blanco y negro", "tramas de semitonos", "tonos de gris", "exactamente 1 viñeta");
+        assertThat(draft.prompt).contains(generated, "Luz fria", "manga japones en blanco y negro", "tramas de semitonos",
+            "globos con los dialogos literales", "cartelas rectangulares con fragmentos descriptivos breves y literales",
+            "Espera, Rin", "La lluvia golpea la puerta del faro.", "tonos de gris", "exactamente 1 viñeta");
         Candidate candidate = workflow.uploadImage(novel.id, draft.id, imageBytes());
         assertThat(candidate.prompt).contains(generated, "Luz fria");
     }

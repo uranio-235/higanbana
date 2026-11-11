@@ -202,11 +202,14 @@ public class TextAssistant {
                 + "apariencia y ropa, objetos, disposicion del lugar, clima, iluminacion y ambiente cuando se describan. "
                 + "No sustituyas esos detalles por escenarios, vestuario o personajes genericos. "
             + "Conserva los hechos del fragmento y la identidad de los personajes; no inventes eventos. "
-            + "No incluyas texto, letras, globos de dialogo, subtitulos, logotipos ni marcas de agua en la imagen. "
+            + "Incluye globos de dialogo solo con intervenciones literales del fragmento, asignados al personaje que habla. "
+            + "Incluye cartelas de narrador con fragmentos descriptivos breves y literales cuando aporten a la viñeta. "
+            + "No inventes ni parafrasees texto; si no hay dialogo o narracion pertinente, no añadas rotulacion. "
+            + "No incluyas logotipos ni marcas de agua. "
                 + "Cada prompt debe entenderse por si solo y no referirse a otros paneles. "
                 + "Devuelve SOLO JSON {\"panels\":[\"prompt visual\"]}; cada prompt en espanol, "
                 + "maximo 1500 caracteres. Sin Markdown.",
-                context, direction, "image-panel-prompts-v1", value -> validPanels(value, count));
+                context, direction, "image-panel-prompts-v2", value -> validPanels(value, count));
         try {
                 return Optional.ofNullable(mapper.readTree(response))
                     .map(root -> root.get("panels"))
@@ -224,10 +227,12 @@ public class TextAssistant {
         }
         CachedText response = callCached("Redacta un prompt final en español para generar una imagen de manga. "
                 + "Respeta exactamente el numero y orden de las viñetas seleccionadas, su accion, personajes y detalles visuales. "
-                + "Usa el texto original solo como referencia, sin añadir escenas ni inventar personajes. "
+            + "Conserva literalmente los dialogos y los fragmentos breves de narracion descriptiva que correspondan a cada viñeta; "
+            + "pon los dialogos en globos atribuidos al personaje que habla y la narracion en cartelas de narrador. "
+            + "No inventes, parafrasees ni traduzcas texto, y no añadas escenas ni personajes. "
                 + "Conserva las instrucciones de estilo y la direccion visual del usuario. "
-                + "Devuelve SOLO JSON {\"prompt\":\"prompt final\"}, sin Markdown, maximo 10000 caracteres.",
-                context, "", "studio-image-prompt-v1", this::validStudioPrompt, 34000);
+            + "Devuelve SOLO JSON {\"prompt\":\"prompt final\"}, sin Markdown, maximo 10000 caracteres.",
+            context, "", "studio-image-prompt-v2", this::validStudioPrompt, 34000);
         try {
             String prompt = Optional.ofNullable(mapper.readTree(response.text()))
                     .map(root -> root.get("prompt"))

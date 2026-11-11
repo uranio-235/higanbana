@@ -26,7 +26,7 @@ import static org.mockito.ArgumentMatchers.*;
 import local.higanbana.domain.Chunking;
 import local.higanbana.application.Workflow;
 import local.higanbana.infrastructure.ai.TextAssistant;
-import local.higanbana.infrastructure.ai.JdbcAiResponseCache;
+import local.higanbana.infrastructure.ai.JpaAiResponseCache;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {"app.nvidia.api-key=test-key", "app.text.model=meta/llama-3.1-8b-instruct", "app.image.model="})
 @AutoConfigureMockMvc
@@ -46,7 +46,7 @@ class WebFlowTest {
         @Autowired javax.sql.DataSource dataSource;
         @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
         @Autowired liquibase.integration.spring.SpringLiquibase migrations;
-        @Autowired JdbcAiResponseCache aiResponseCache;
+        @Autowired JpaAiResponseCache aiResponseCache;
     MockHttpSession session;
 
         @Test void testsUseH2WithIdempotentLiquibaseMigrationsAndHibernateValidation() throws Exception {

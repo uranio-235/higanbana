@@ -44,7 +44,9 @@ class TextAssistantTest {
                 .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("prompts independientes")))
                 .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("manga japones en blanco y negro")))
                 .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("tramas de semitonos")))
-                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("globos de dialogo")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("globos de dialogo solo con intervenciones literales")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("cartelas de narrador con fragmentos descriptivos breves y literales")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("No inventes ni parafrasees texto")))
                 .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("detalles visuales concretos del fragmento")))
                 .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("No sustituyas esos detalles")))
                 .andRespond(withSuccess(completion("{\"panels\":[\"Plano general.\",\"Primer plano.\"]}"), MediaType.APPLICATION_JSON));
@@ -225,6 +227,8 @@ class TextAssistantTest {
         var firstSeed = new java.util.concurrent.atomic.AtomicReference<Integer>();
         server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
                 .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("numero y orden de las viñetas")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("Conserva literalmente los dialogos")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("cartelas de narrador")))
                 .andExpect(request -> {
                     var body = ((org.springframework.mock.http.client.MockClientHttpRequest) request).getBodyAsString();
                     firstSeed.set(new ObjectMapper().readTree(body).get("seed").intValue());
