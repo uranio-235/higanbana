@@ -15,6 +15,6 @@ public class NovelCharacter extends Row {
     public Novel novel;
     @Column(nullable = false, length = 120)
     public String name;
-    @Column(nullable = false, columnDefinition = "text")
-    public String description;
+    @Column(name = "description", nullable = false, columnDefinition = "text")
+    public String prompt;
 }

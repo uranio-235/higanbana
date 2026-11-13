@@ -14,7 +14,6 @@
     <p class="project-name" th:text="${novel != null ? novel.title : 'Biblioteca'}"></p>
     <nav aria-label="Flujo de adaptacion">
       <a href="/" th:classappend="${view == 'novels'} ? 'active'"><span class="step">01</span> Novelas <i data-lucide="library" aria-hidden="true"></i></a>
-      <a th:if="${novel != null}" th:href="@{/novels/{id}/characters(id=${novel.id})}" th:classappend="${view == 'characters'} ? 'active'"><span class="step"><i data-lucide="users" aria-hidden="true"></i></span> Personajes</a>
       <th:block th:each="stage : ${ {'chunks','panels','studio','generation','reader'} }">
         <a th:if="${novel != null}" th:href="@{/novels/{id}/{stage}(id=${novel.id},stage=${stage})}" th:classappend="${view == stage} ? 'active'">
           <span class="step" th:text="${stage == 'chunks' ? '02' : stage == 'panels' ? '03' : stage == 'studio' ? '04' : stage == 'generation' ? '05' : '06'}"></span>
@@ -22,6 +21,9 @@
         </a>
         <span th:unless="${novel != null}" class="disabled"><span class="step" th:text="${stage == 'chunks' ? '02' : stage == 'panels' ? '03' : stage == 'studio' ? '04' : stage == 'generation' ? '05' : '06'}"></span><span th:text="${stage == 'chunks' ? 'Chunks' : stage == 'panels' ? 'Paneles' : stage == 'studio' ? 'Estudio' : stage == 'generation' ? 'Generacion' : 'Lector'}"></span></span>
       </th:block>
+    </nav>
+    <nav th:if="${novel != null}" class="sidebar-tools" aria-label="Herramientas de la novela">
+      <a th:href="@{/novels/{id}/characters(id=${novel.id})}" th:classappend="${view == 'characters'} ? 'active'"><span class="step"><i data-lucide="users" aria-hidden="true"></i></span> Personajes</a>
     </nav>
     <div class="storage-note"><i data-lucide="database" aria-hidden="true"></i><strong>Almacenamiento local</strong><p>Novelas y personajes en DuckDB. Imagenes aprobadas en disco.</p></div>
   </aside>
@@ -48,11 +50,19 @@
 
     <section th:if="${view == 'characters'}">
       <div class="page-heading"><div><p class="eyebrow">REPARTO / FICHAS VISUALES</p><h1>Personajes</h1></div><span class="tag" th:text="${#lists.size(characters)} + ' personajes'"></span></div>
+      <p class="notice" role="alert" th:if="${characterError}" th:text="${characterError}"></p>
+      <p class="notice" th:unless="${characterPromptsAvailable}">La generacion de personajes no esta disponible. Configura NVIDIA y el modelo de texto.</p>
       <form th:action="@{/novels/{id}/characters(id=${novel.id})}" method="post" class="editor-form">
-        <input type="hidden" name="_csrf" th:value="${csrf}"><h2>Nuevo personaje</h2>
-        <label for="character-name">Nombre</label><input id="character-name" name="name" maxlength="120" required>
-        <label for="character-description">Descripcion visual</label><textarea id="character-description" name="description" rows="4" maxlength="2000" required placeholder="Rasgos, cabello, vestuario, expresiones..."></textarea>
-        <button><i data-lucide="user-plus" aria-hidden="true"></i> Crear personaje</button>
+        <input type="hidden" name="_csrf" th:value="${csrf}"><h2>Extraer reparto</h2>
+        <p>Una solicitud por chunk confirmado. Se crearan nuevos personajes y se enriqueceran sus fichas con rasgos estables, reutilizables entre escenas.</p>
+        <p th:text="${currentCharacterChunk == null ? 'Chunk actual: ninguno examinado' : 'Chunk actual: ' + currentCharacterChunk.position}"></p>
+        <label for="character-chunk">Siguiente chunk</label>
+        <select id="character-chunk" name="chunkId" th:disabled="${#lists.isEmpty(pendingCharacterChunks) or !characterPromptsAvailable}">
+          <option th:if="${#lists.isEmpty(pendingCharacterChunks)}" value="">No hay chunks pendientes</option>
+          <option th:each="chunk : ${pendingCharacterChunks}" th:value="${chunk.id}" th:text="'Chunk ' + ${chunk.position}"></option>
+        </select>
+        <p th:if="${#lists.isEmpty(chunks)}">Confirma primero los chunks de la novela.</p>
+        <button th:disabled="${#lists.isEmpty(pendingCharacterChunks) or !characterPromptsAvailable}"><i data-lucide="users" aria-hidden="true"></i> Examinar siguiente chunk</button>
       </form>
       <div class="section-heading"><h2>Reparto de la novela</h2><a class="button secondary" th:href="@{/novels/{id}/studio(id=${novel.id})}">Abrir estudio <i data-lucide="arrow-right" aria-hidden="true"></i></a></div>
       <p class="empty" th:if="${#lists.isEmpty(characters)}">Todavia no hay personajes.</p>
@@ -60,11 +70,12 @@
         <div class="section-heading"><h3 th:text="${character.name}"></h3>
           <form th:action="@{/novels/{id}/characters/{character}/delete(id=${novel.id},character=${character.id})}" method="post" hx-confirm="Eliminar este personaje? Las descripciones ya preparadas se conservaran."><input type="hidden" name="_csrf" th:value="${csrf}"><button class="secondary icon-button" title="Eliminar personaje" aria-label="Eliminar personaje"><i data-lucide="trash-2" aria-hidden="true"></i></button></form>
         </div>
-        <form th:action="@{/novels/{id}/characters/{character}/save(id=${novel.id},character=${character.id})}" method="post" class="editor-form">
+        <label th:for="'prompt-character-' + ${character.id}">Prompt para generar el personaje</label>
+        <textarea th:id="'prompt-character-' + ${character.id}" rows="5" readonly th:text="${character.prompt}"></textarea>
+        <form th:if="${characterPromptsAvailable}" th:action="@{/novels/{id}/characters/{character}/revise(id=${novel.id},character=${character.id})}" method="post" class="editor-form">
           <input type="hidden" name="_csrf" th:value="${csrf}">
-          <label th:for="'name-' + ${character.id}">Nombre</label><input th:id="'name-' + ${character.id}" name="name" maxlength="120" required th:value="${character.name}">
-          <label th:for="'description-' + ${character.id}">Descripcion visual</label><textarea th:id="'description-' + ${character.id}" name="description" rows="4" maxlength="2000" required th:text="${character.description}"></textarea>
-          <button class="secondary"><i data-lucide="save" aria-hidden="true"></i> Guardar personaje</button>
+          <label th:for="'instructions-' + ${character.id}">Instrucciones para modificar el prompt</label><textarea th:id="'instructions-' + ${character.id}" name="instructions" rows="3" maxlength="1500" required placeholder="Por ejemplo: cambia el abrigo a oscuro."></textarea>
+          <button class="secondary"><i data-lucide="sparkles" aria-hidden="true"></i> Modificar con IA</button>
         </form>
       </article>
     </section>
@@ -117,7 +128,8 @@
       <form th:unless="${#lists.isEmpty(panels)}" th:action="@{/novels/{id}/studio(id=${novel.id})}" method="post" class="editor-form" data-panel-selection>
         <input type="hidden" name="_csrf" th:value="${csrf}"><fieldset><legend>Prompts que formaran la imagen</legend><label class="selection-row" th:each="panel : ${panels}"><input type="checkbox" name="panelIds" th:value="${panel.id}" th:checked="${selectedPanelIds != null and #lists.contains(selectedPanelIds, panel.id)}" th:attr="data-chunk-id=${panel.chunkId}"><span><strong th:text="'Chunk ' + ${panel.chunkPosition} + ' / Panel ' + ${panel.position}"></strong><span th:text="${panel.imagePrompt}"></span></span></label></fieldset>
         <p class="selection-count muted" aria-live="polite">0 seleccionados</p>
-        <fieldset th:unless="${#lists.isEmpty(characters)}"><legend>Personajes en escena</legend><label class="selection-row" th:each="character : ${characters}"><input type="checkbox" name="characterIds" th:value="${character.id}" th:checked="${selectedCharacterIds != null and #lists.contains(selectedCharacterIds, character.id)}"><span><strong th:text="${character.name}"></strong><span th:text="${character.description}"></span></span></label></fieldset>
+        <p th:unless="${#lists.isEmpty(characters)}" class="muted">La IA puede consultar las fichas de esta novela automaticamente. Marca personajes si quieres incluir sus fichas como referencia explicita.</p>
+        <fieldset th:unless="${#lists.isEmpty(characters)}"><legend>Personajes en escena (referencias opcionales)</legend><label class="selection-row" th:each="character : ${characters}"><input type="checkbox" name="characterIds" th:value="${character.id}" th:checked="${selectedCharacterIds != null and #lists.contains(selectedCharacterIds, character.id)}"><span><strong th:text="${character.name}"></strong><span th:text="${character.prompt}"></span></span></label></fieldset>
         <label for="direction">Ajustes finales opcionales</label><textarea id="direction" name="direction" rows="2" maxlength="1500" placeholder="Ajustar luz, encuadre o composicion sin cambiar la escena..." th:text="${studioDirection}"></textarea>
         <button data-selection-submit><i data-lucide="pencil-line" aria-hidden="true"></i> Preparar prompt final</button>
       </form>

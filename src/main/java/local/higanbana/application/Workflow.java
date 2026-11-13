@@ -15,10 +15,12 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Stream;
 import local.higanbana.infrastructure.ai.TextAssistant;
 import local.higanbana.domain.ai.ChunkRequestBuilder;
 import local.higanbana.domain.ai.PanelPromptRequestBuilder;
 import local.higanbana.domain.ai.PromptCharacterBuilder;
+import local.higanbana.domain.ai.PromptCharacter;
 import local.higanbana.domain.ai.StudioPromptRequestBuilder;
 import local.higanbana.infrastructure.image.ImageProvider;
 import local.higanbana.infrastructure.image.ImageResultBuilder;
@@ -76,37 +78,6 @@ public class Workflow {
         plan.segments.size();
         plan.confirmed = repository.findChunkPlanConfirmation(plan.id).isPresent();
         return plan;
-    }
-
-    public List<NovelCharacter> characters(long novelId) {
-        novel(novelId);
-        return repository.findCharacters(novelId);
-    }
-
-    public NovelCharacter addCharacter(long novelId, String name, String description) {
-        Novel novel = mutableNovel(novelId);
-        validText(name, 120, "Nombre del personaje");
-        validText(description, 2000, "Descripcion del personaje");
-        NovelCharacter character = new NovelCharacter();
-        character.name = name.strip();
-        character.description = description.strip();
-        novel.addCharacter(character);
-        repository.saveCharacter(character);
-        return character;
-    }
-
-    public void updateCharacter(long novelId, long characterId, String name, String description) {
-        mutableNovel(novelId);
-        validText(name, 120, "Nombre del personaje");
-        validText(description, 2000, "Descripcion del personaje");
-        NovelCharacter character = character(novelId, characterId);
-        character.name = name.strip();
-        character.description = description.strip();
-    }
-
-    public void deleteCharacter(long novelId, long characterId) {
-        Novel novel = mutableNovel(novelId);
-        novel.removeCharacter(character(novelId, characterId));
     }
 
     private NovelCharacter character(long novelId, long characterId) {
@@ -191,7 +162,7 @@ public class Workflow {
             fail("El plan esta confirmado; al regenerar se conserva el numero de paneles.");
         }
         List<String> imagePrompts = text.imagePanelPrompts(new PanelPromptRequestBuilder()
-                .source(chunk.content).count(count).direction(revision).build());
+                .source(chunk.content).count(count).direction(revision).characters(promptCharacters(novelId)).build());
         validateImagePrompts(imagePrompts, count);
         if (plan != null && plan.confirmed) {
             List<Panel> savedPanels = repository.findPanelsByChunk(chunkId);
@@ -284,13 +255,15 @@ public class Workflow {
         var characters = castIds.stream().sorted()
             .map(characterId -> character(novelId, characterId))
             .map(character -> new PromptCharacterBuilder()
-                    .name(character.name).description(character.description).build()).toList();
+                    .name(character.name).description(character.prompt).build()).toList();
         List<String> selectedPrompts = selected.stream().map(panel -> panel.imagePrompt).toList();
         selectedPrompts.forEach(prompt -> validText(prompt, 1500, "Prompt de imagen del panel"));
         var request = new StudioPromptRequestBuilder().panelPrompts(selectedPrompts)
-                .source(sourceChunk.content).direction(direction).characters(characters).build();
-        String characterContext = text.characterContext(request.characters());
+                .source(sourceChunk.content).direction(direction).characters(characters)
+                .availableCharacters(promptCharacters(novelId)).build();
         var generated = text.studioPrompt(request);
+        String characterContext = text.characterContext(Stream.concat(
+                request.characters().stream(), generated.characters().stream()).distinct().toList());
         validText(generated.text(), 41000, "Descripcion");
         StudioDraft draft = new StudioDraft();
         draft.novelId = novelId;
@@ -304,6 +277,11 @@ public class Workflow {
         draft.provenance = "Prompts de panel / " + text.imagePanelPromptProvenance();
         repository.saveDraft(draft);
         return draft;
+    }
+
+    private List<PromptCharacter> promptCharacters(long novelId) {
+        return repository.findCharacters(novelId).stream().map(character -> new PromptCharacterBuilder()
+                .name(character.name).description(character.prompt).build()).toList();
     }
 
     public List<StudioDraft> drafts(long novelId) {
@@ -409,15 +387,23 @@ public class Workflow {
         }
         if (candidate.state != ReviewState.PENDING) { fail("Solo se pueden aprobar candidatos pendientes."); }
         List<Long> candidatePanels = candidatePanels(candidate);
+        List<MangaEntry> replaced = new ArrayList<>();
+        List<Candidate> replacedCandidates = new ArrayList<>();
         for (MangaEntry entry : reader(novelId)) {
             Optional<Candidate> approved = entry.candidateId == null
                     ? Optional.empty() : repository.findCandidate(entry.candidateId);
             List<Long> covered = approved.map(this::candidatePanels)
                     .orElseGet(() -> legacyPanels(entry.firstPanelId, entry.secondPanelId));
-            if (candidatePanels.stream().anyMatch(covered::contains)) {
-                fail("Uno de estos paneles ya tiene una imagen aprobada.");
+            if (candidatePanels.stream().noneMatch(covered::contains)) { continue; }
+            if (!candidatePanels.containsAll(covered)) {
+                fail("La imagen aprobada incluye paneles que este candidato no cubre; aprueba un candidato con todos esos paneles para reemplazarla.");
             }
+            replaced.add(entry);
+            approved.ifPresent(replacedCandidates::add);
         }
+        for (MangaEntry entry : replaced) { repository.deleteEntry(entry); }
+        for (Candidate previous : replacedCandidates) { previous.state = ReviewState.REJECTED; }
+        List<String> replacedFiles = replaced.stream().map(entry -> entry.filename).toList();
         String extension = switch (candidate.mediaType) { case "image/svg+xml" -> ".svg"; case "image/png" -> ".png"; default -> ".jpg"; };
         String filename = UUID.randomUUID() + extension;
         try {
@@ -429,6 +415,10 @@ public class Workflow {
             @Override public void afterCompletion(int status) {
                 if (status != STATUS_COMMITTED) {
                     try { imageStorage.delete(filename); } catch (IOException ignored) {}
+                    return;
+                }
+                for (String previous : replacedFiles) {
+                    try { imageStorage.delete(previous); } catch (IOException ignored) {}
                 }
             }
         });

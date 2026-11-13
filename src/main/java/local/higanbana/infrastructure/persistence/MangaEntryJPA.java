@@ -14,4 +14,5 @@ class MangaEntryJPA {
     List<MangaEntry> findEntriesForNovel(long novelId) { return repository.findEntriesForNovel(novelId); }
     Optional<MangaEntry> findById(long id) { return repository.findById(id); }
     void save(MangaEntry entry) { repository.save(entry); }
+    void delete(MangaEntry entry) { repository.delete(entry); }
 }

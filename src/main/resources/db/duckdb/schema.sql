@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS chunk (
     content TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_chunk_position ON chunk(novel_id, position);
+ALTER TABLE chunk ADD COLUMN IF NOT EXISTS characters_extracted_at TIMESTAMP;
 
 CREATE TABLE IF NOT EXISTS panel_plan (
     id BIGINT PRIMARY KEY,

@@ -109,4 +109,5 @@ public class WorkflowJPA implements WorkflowRepository {
     @Override public List<MangaEntry> findEntries(long novelId) { return entries.findEntriesForNovel(novelId); }
     @Override public Optional<MangaEntry> findEntry(long id) { return entries.findById(id); }
     @Override public void saveEntry(MangaEntry entry) { entries.save(entry); }
+    @Override public void deleteEntry(MangaEntry entry) { entries.delete(entry); }
 }

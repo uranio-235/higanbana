@@ -55,25 +55,65 @@ certificate/proxy for PowerShell first.
   Multiple drafts are allowed.
 5. **Generacion**: generate from the **saved** description. Candidates snapshot
    that description; later edits do not change existing candidates. Approve or
-   reject explicitly. Approval is idempotent. An already covered panel cannot be
-   approved again through another candidate. Approved images cannot be rejected.
+   reject explicitly. Approval is idempotent. Approving a candidate that covers
+   every panel of an existing approved image replaces it: the old reader entry is
+   removed, its candidate becomes rejected and its file is deleted after commit.
+   A candidate that would leave some of those panels without an image is refused.
+   Approved images cannot be rejected.
 6. **Lector**: only approved images appear, in narrative order, with download links
    and an on-demand PDF download (one approved image per page). Multi-panel
    compositions stay intact; the exporter does not guess panel crop boundaries.
 
 **Personajes** is available in the novel sidebar independently of these six stages.
 Each novel owns its character sheets through JPA `OneToMany` / `ManyToOne` with a
-non-null foreign key. Create, edit, or delete a name (120 characters maximum) and
-visual description (2,000 characters maximum). Deleting a sheet never deletes
+non-null foreign key. Confirm the narrative chunks first, then select and examine them.
+Each action sends the complete selected chunk and existing character sheets in one
+NVIDIA request. It creates new sheets and enriches known characters with newly discovered
+stable traits in complete visual prompts (2,000 characters maximum). Prompts describe
+reusable identity, not poses, framing, settings, lighting or temporary states such as
+wet hair. Previous stable traits and user revisions are supplied as context to preserve
+them. New traits must be explicitly stated for that character, not inferred from
+setting, names or stereotypes. Unknown attributes are omitted rather than filled in.
+Clothing worn in a scene (for example a festival yukata) is not habitual clothing
+unless the text explicitly establishes that. These are model instructions, not a
+deterministic factuality check. Existing sheets are not automatically regenerated;
+scene-specific details in older prompts are removed when that character is
+examined or revised again. Unmentioned sheets are unchanged. Progress is saved;
+names are matched case-insensitively,
+although aliases may still require manual cleanup. The prompt is read-only: provide
+instructions to NVIDIA to revise it in a separate request. Provider errors leave the
+chunk pending and existing characters unchanged. Character management
+is handled by `CharacterManager`, independently of the numbered workflow. Deleting a sheet never deletes
 existing drafts or candidates.
 
-Selected character sheets are snapshotted into each studio draft, supplied to the
-text assistant, and appended to the saved prompt sent to the image provider.
-Editing a prompt cannot silently remove these references; later sheet changes
-do not alter prepared drafts or generated images. Create a new draft to use an
-updated sheet. Selection is optional for scenery-only images. Selected sheets
-are capped at 3,000 combined characters, text context at 8,000 and the final image
-prompt at 10,000; oversized selections are rejected, not silently truncated.
+Both panel-prompt generation and final studio-prompt generation expose the
+read-only `lookup_characters` tool. The initial request includes the novel's
+character names, not all descriptions. The model can request all relevant sheets
+in one batch; only sheets from that novel are available. The backend supplies
+their stored descriptions without another AI extraction. Unknown names, invalid
+arguments, multiple tool calls or a second tool round fail explicitly. A generation
+uses at most two text-model requests before retries: one to request the sheets and
+one to produce the final JSON. With no lookup it uses one; cache hits use none.
+No request pacing is implemented here.
+
+The model is instructed to incorporate known identity traits without inventing
+unknown attributes; the scene remains the source for temporary clothing, actions,
+expressions and setting. These instructions are not a deterministic guarantee of
+model adherence. The configured provider/model must support OpenAI-compatible
+tool calling; unsupported requests are reported, not replaced with simulated output.
+Cache keys include the complete available sheets, so updating or deleting a sheet
+invalidates the corresponding generation. Cached tool results retain the consulted
+sheet snapshots.
+
+Studio character checkboxes remain optional explicit references, not a prerequisite
+for automatic lookup. Explicitly selected and automatically consulted sheets are
+snapshotted into each studio draft and appended when copying its complete image
+prompt. Editing a prompt cannot silently remove these references; later sheet
+changes do not alter prepared drafts or uploaded images. Create a new draft to use
+updated sheets. Used sheets are capped at 3,000 combined characters. Panel source
+context is capped at 8,000 characters, studio references at 30,000, and generated
+studio prompts at 10,000 including mandatory drawing rules (up to 41,000 with source
+references). Oversized inputs are rejected, not silently truncated.
 
 Confirmed chunk/panel plans are immutable. Replanning is refused rather than
 deleting downstream work. To explore another confirmed segmentation, import a

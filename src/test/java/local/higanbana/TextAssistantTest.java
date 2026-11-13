@@ -70,6 +70,101 @@ class TextAssistantTest {
                                 .withMessageContaining("app.text-mode debe ser demo o nvidia");
         }
 
+    @Test void characterExtractionSendsTheWholeSelectedChunkOnceAndReturnsPrompts() throws Exception {
+        RestClient.Builder builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        String source = "Aiko y Rin llegan." + " ".repeat(5000) + "Sora se marcha.";
+        var existing = java.util.List.of(new PromptCharacterBuilder().name("Aiko").description("Cabello oscuro.").build());
+        server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("Aiko y Rin llegan.")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("Sora se marcha.")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("Cabello oscuro.")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("ficha de identidad visual reutilizable")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("conserva solo 'cabello oscuro'")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("prompt completo fusionado")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("La plausibilidad no es evidencia")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("Omite lo desconocido")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("aunque se nombre y describa su color")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("Conserva los rasgos estables acumulados aunque este chunk no los repita")))
+                .andRespond(withSuccess(completion("{\"characters\":[{\"name\":\"Aiko\",\"prompt\":\"Abrigo blanco.\"},{\"name\":\"Sora\",\"prompt\":\"Pelo negro.\"}]}"), MediaType.APPLICATION_JSON));
+        var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
+                "test-model", new ObjectMapper(), builder);
+        assertThat(assistant.extractCharacters(source, existing)).extracting(character -> character.name())
+                .containsExactly("Aiko", "Sora");
+        assertThat(assistant.extractCharacters(source, existing)).extracting(character -> character.description())
+                .containsExactly("Abrigo blanco.", "Pelo negro.");
+        server.verify();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"{}", "{\"characters\":null}", "{\"characters\":[null]}", "{\"characters\":[\"\"]}",
+            "{\"characters\":\"Aiko\"}", "{\"characters\":[123]}", "{\"characters\":[{\"name\":\"Aiko\",\"prompt\":null}]}"})
+    void characterExtractionRejectsInvalidLists(String payload) throws Exception {
+        RestClient.Builder builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                .andRespond(withSuccess(completion(payload), MediaType.APPLICATION_JSON));
+        var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
+                "test-model", new ObjectMapper(), builder);
+        assertThatIllegalArgumentException().isThrownBy(() -> assistant.extractCharacters("Una novela.", java.util.List.of()))
+                .withMessageContaining("personajes no validos");
+        server.verify();
+    }
+
+    @Test void extractionCacheIncludesTheCurrentCharacterSheets() throws Exception {
+        RestClient.Builder builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                .andRespond(withSuccess(completion("{\"characters\":[{\"name\":\"Aiko\",\"prompt\":\"Cabello oscuro.\"}]}"), MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("Ojos grises.")))
+                .andRespond(withSuccess(completion("{\"characters\":[{\"name\":\"Aiko\",\"prompt\":\"Cabello oscuro. Ojos grises.\"}]}"), MediaType.APPLICATION_JSON));
+        var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
+                "test-model", new ObjectMapper(), builder);
+        var first = assistant.extractCharacters("Aiko espera.", java.util.List.of());
+        var updated = assistant.extractCharacters("Aiko espera.", java.util.List.of(
+                new PromptCharacterBuilder().name("Aiko").description("Ojos grises.").build()));
+        assertThat(first.getFirst().description()).isEqualTo("Cabello oscuro.");
+        assertThat(updated.getFirst().description()).isEqualTo("Cabello oscuro. Ojos grises.");
+        server.verify();
+    }
+
+    @Test void characterRevisionUsesExistingPromptAndInstructions() throws Exception {
+        RestClient.Builder builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("PROMPT ACTUAL")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("Cambia el abrigo a oscuro")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("ficha de identidad visual reutilizable")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("llevarla en una escena")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("Omite lo desconocido")))
+                .andRespond(withSuccess(completion("{\"prompt\":\"Aiko, ojos grises y abrigo oscuro.\"}"), MediaType.APPLICATION_JSON));
+        var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
+                "test-model", new ObjectMapper(), builder);
+        assertThat(assistant.reviseCharacterPrompt("Aiko", "Aiko con abrigo claro.", "Cambia el abrigo a oscuro"))
+                .isEqualTo("Aiko, ojos grises y abrigo oscuro.");
+        server.verify();
+    }
+
+    @Test void characterGenerationRequiresRealProvider() {
+        var assistant = assistant("demo", "https://integrate.api.nvidia.com", "", "test-model",
+                new ObjectMapper(), RestClient.builder());
+        assertThat(assistant.characterPromptsAvailable()).isFalse();
+        assertThatIllegalArgumentException().isThrownBy(() -> assistant.extractCharacters("Texto", java.util.List.of()))
+                .withMessageContaining("requiere configurar NVIDIA");
+    }
+
+    @Test void characterGenerationRejectsInvalidFinalPrompt() throws Exception {
+        RestClient.Builder builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                .andRespond(withSuccess(completion("{\"prompt\":null}"), MediaType.APPLICATION_JSON));
+        var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
+                "test-model", new ObjectMapper(), builder);
+        assertThatIllegalArgumentException().isThrownBy(() -> assistant.reviseCharacterPrompt("Aiko", "Abrigo.", "Oscuro"));
+        server.verify();
+    }
+
         @Test void nvidiaExtractsImagePromptsWithoutAWrapperRecord() throws Exception {
         RestClient.Builder builder = RestClient.builder();
         var server = MockRestServiceServer.bindTo(builder).build();
@@ -123,6 +218,157 @@ class TextAssistantTest {
                 "id", "test", "object", "chat.completion", "created", 1, "model", "test-model",
                 "choices", java.util.List.of(Map.of("index", 0, "finish_reason", "stop",
                         "message", Map.of("role", "assistant", "content", payload)))));
+    }
+
+    private String characterToolCall(String tool, String arguments) throws JsonProcessingException {
+        return new ObjectMapper().writeValueAsString(Map.of(
+                "id", "test", "object", "chat.completion", "created", 1, "model", "test-model",
+                "choices", java.util.List.of(Map.of("index", 0, "finish_reason", "tool_calls",
+                        "message", Map.of("role", "assistant", "tool_calls", java.util.List.of(Map.of(
+                                "id", "call_characters", "type", "function",
+                                "function", Map.of("name", tool, "arguments", arguments))))))));
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void promptGeneratorsRetrieveOnlyRequestedCharactersAndCacheTheResult(boolean studio) throws Exception {
+        RestClient.Builder builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        var cast = java.util.List.of(
+                new PromptCharacterBuilder().name("Aiko").description("Cabello corto, ojos grises.").build(),
+                new PromptCharacterBuilder().name("Rin").description("Lunar en la mejilla.").build(),
+                new PromptCharacterBuilder().name("Sora").description("Trenza larga.").build());
+        server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                .andExpect(jsonPath("$.tools[0].function.name").value("lookup_characters"))
+                .andExpect(jsonPath("$.parallel_tool_calls").value(false))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("Aiko")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("Sora")))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("Cabello corto"))))
+                .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("Lunar en la mejilla"))))
+                .andRespond(withSuccess(characterToolCall("lookup_characters", "{\"names\":[\"Aiko\",\"Rin\"]}"),
+                        MediaType.APPLICATION_JSON));
+        String finalJson = studio ? "{\"prompt\":\"Aiko de ojos grises junto a Rin con su lunar.\"}"
+                : "{\"panels\":[\"Aiko de ojos grises junto a Rin con su lunar.\"]}";
+        server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                .andExpect(jsonPath("$.messages[1].role").value("assistant"))
+                .andExpect(jsonPath("$.messages[1].tool_calls[0].id").value("call_characters"))
+                .andExpect(jsonPath("$.messages[2].role").value("tool"))
+                .andExpect(jsonPath("$.messages[2].tool_call_id").value("call_characters"))
+                .andExpect(jsonPath("$.messages[2].content", org.hamcrest.Matchers.containsString("Cabello corto, ojos grises.")))
+                .andExpect(jsonPath("$.messages[2].content", org.hamcrest.Matchers.containsString("Lunar en la mejilla.")))
+                .andExpect(jsonPath("$.messages[2].content", org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("Trenza larga"))))
+                .andRespond(withSuccess(completion(finalJson), MediaType.APPLICATION_JSON));
+        var cache = new InMemoryAiResponseCache();
+        var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
+                "test-model", new ObjectMapper(), builder, cache);
+        if (studio) {
+            var request = new StudioPromptRequestBuilder().from(studio("Aiko y Rin esperan."))
+                    .availableCharacters(cast).build();
+            var first = assistant.studioPrompt(request);
+            assertThat(first.text()).contains("Aiko de ojos grises junto a Rin con su lunar.");
+            assertThat(first.characters()).containsExactly(cast.get(0), cast.get(1));
+            var anotherAssistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
+                    "test-model", new ObjectMapper(), builder, cache);
+            assertThat(anotherAssistant.studioPrompt(request)).isEqualTo(first);
+        } else {
+            var request = panels("Aiko y Rin esperan.").characters(cast).build();
+            assertThat(assistant.imagePanelPrompts(request)).map(this::panelDescription)
+                    .containsExactly("Aiko de ojos grises junto a Rin con su lunar.");
+            assertThat(assistant.imagePanelPrompts(request)).map(this::panelDescription)
+                    .containsExactly("Aiko de ojos grises junto a Rin con su lunar.");
+        }
+        server.verify();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"null", "{}", "{\"names\":[]}", "{\"names\":\"Aiko\"}", "{\"names\":[1]}",
+            "{\"names\":[\"Aiko\"],\"novelId\":123}", "{\"names\":[\"Aiko\",\"Aiko\"]}",
+            "{\"names\":[\"Personaje de otra novela\"]}", "not-json"})
+    void invalidCharacterToolArgumentsFailWithoutCachingTheGeneration(String arguments) throws Exception {
+        RestClient.Builder builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                .andRespond(withSuccess(characterToolCall("lookup_characters", arguments), MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                .andRespond(withSuccess(completion("{\"panels\":[\"Una ventana vacia.\"]}"), MediaType.APPLICATION_JSON));
+        var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
+                "test-model", new ObjectMapper(), builder);
+        var request = panels("Una ventana.").characters(java.util.List.of(
+                new PromptCharacterBuilder().name("Aiko").description("Cabello oscuro.").build(),
+                new PromptCharacterBuilder().name("Rin").description("Cabello claro.").build())).build();
+        assertThatIllegalArgumentException().isThrownBy(() -> assistant.imagePanelPrompts(request))
+                .withMessageContaining("personaje");
+        assertThat(assistant.imagePanelPrompts(request)).map(this::panelDescription).containsExactly("Una ventana vacia.");
+        server.verify();
+    }
+
+    @Test void characterLookupRejectsUnknownToolsAndRepeatedRounds() throws Exception {
+        RestClient.Builder builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                .andRespond(withSuccess(characterToolCall("change_character", "{\"names\":[\"Aiko\"]}"), MediaType.APPLICATION_JSON));
+        for (int index = 0; index < 2; index++) {
+            server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                    .andRespond(withSuccess(characterToolCall("lookup_characters", "{\"names\":[\"Aiko\"]}"), MediaType.APPLICATION_JSON));
+        }
+        var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
+                "test-model", new ObjectMapper(), builder);
+        var request = new StudioPromptRequestBuilder().from(studio("Aiko espera."))
+                .availableCharacters(java.util.List.of(
+                        new PromptCharacterBuilder().name("Aiko").description("Cabello oscuro.").build())).build();
+        assertThatIllegalArgumentException().isThrownBy(() -> assistant.studioPrompt(request))
+                .withMessageContaining("herramienta de personajes no valida");
+        assertThatIllegalArgumentException().isThrownBy(() -> assistant.studioPrompt(request))
+                .withMessageContaining("limite de una consulta");
+        server.verify();
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void characterToolCacheChangesWhenSheetsChangeOrAreDeleted(boolean studio) throws Exception {
+        RestClient.Builder builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        String finalJson = studio ? "{\"prompt\":\"Aiko junto a la ventana.\"}"
+                : "{\"panels\":[\"Aiko junto a la ventana.\"]}";
+        var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
+                "test-model", new ObjectMapper(), builder);
+        for (int index = 0; index < 3; index++) {
+            server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                    .andRespond(withSuccess(completion(finalJson), MediaType.APPLICATION_JSON));
+        }
+        for (String description : java.util.List.of("Ojos grises.", "Ojos verdes.", "")) {
+            var cast = description.isEmpty() ? java.util.List.<local.higanbana.domain.ai.PromptCharacter>of()
+                    : java.util.List.of(new PromptCharacterBuilder().name("Aiko").description(description).build());
+            if (studio) {
+                var request = new StudioPromptRequestBuilder().from(studio("Aiko espera.")).availableCharacters(cast).build();
+                assistant.studioPrompt(request);
+                assistant.studioPrompt(request);
+            } else {
+                var request = panels("Aiko espera.").characters(cast).build();
+                assistant.imagePanelPrompts(request);
+                assistant.imagePanelPrompts(request);
+            }
+        }
+        server.verify();
+    }
+
+    @Test void oversizedCharacterToolResultsStopBeforeTheFinalModelRequest() throws Exception {
+        RestClient.Builder builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                .andRespond(withSuccess(characterToolCall("lookup_characters", "{\"names\":[\"Aiko\",\"Rin\"]}"),
+                        MediaType.APPLICATION_JSON));
+        var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
+                "test-model", new ObjectMapper(), builder);
+        var request = panels("Aiko y Rin esperan.").characters(java.util.List.of(
+                new PromptCharacterBuilder().name("Aiko").description("a".repeat(1600)).build(),
+                new PromptCharacterBuilder().name("Rin").description("b".repeat(1600)).build())).build();
+        assertThatIllegalArgumentException().isThrownBy(() -> assistant.imagePanelPrompts(request))
+                .withMessageContaining("3000 caracteres");
+        server.verify();
     }
 
         @Test void narrativeScenesContinueAcrossTechnicalWindowsWithoutRewritingSource() throws Exception {

@@ -5,9 +5,11 @@ import org.immutables.value.Value;
 
 @Value.Builder
 public record StudioPromptRequest(List<String> panelPrompts, String source, String direction,
-                                 List<PromptCharacter> characters) implements WithStudioPromptRequest {
+                                 List<PromptCharacter> characters,
+                                 List<PromptCharacter> availableCharacters) implements WithStudioPromptRequest {
     public StudioPromptRequest {
         panelPrompts = List.copyOf(panelPrompts);
         characters = List.copyOf(characters);
+        availableCharacters = List.copyOf(availableCharacters);
     }
 }

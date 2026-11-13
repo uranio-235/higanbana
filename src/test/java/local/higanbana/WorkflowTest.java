@@ -17,10 +17,12 @@ import local.higanbana.domain.ReviewState;
 import local.higanbana.domain.entity.*;
 import local.higanbana.domain.Chunking;
 import local.higanbana.application.Workflow;
+import local.higanbana.application.CharacterManager;
 import local.higanbana.infrastructure.ai.TextAssistant;
 import local.higanbana.domain.ai.ChunkRequest;
 import local.higanbana.domain.ai.PanelPromptRequest;
 import local.higanbana.domain.ai.PanelPromptRequestBuilder;
+import local.higanbana.domain.ai.PromptCharacterBuilder;
 import local.higanbana.domain.ai.CachedTextBuilder;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -36,6 +38,7 @@ class WorkflowTest {
         registry.add("app.text-mode", () -> "demo");
     }
     @Autowired Workflow workflow;
+    @Autowired CharacterManager characters;
     @MockitoSpyBean TextAssistant text;
     @Autowired jakarta.persistence.EntityManager em;
 
@@ -49,6 +52,20 @@ class WorkflowTest {
             .when(text).imagePanelPrompts(any(PanelPromptRequest.class));
         doReturn(new CachedTextBuilder().text("Propuesta de prueba.").cacheKey("test-key").build())
             .when(text).studioPrompt(any());
+    }
+
+    private NovelCharacter addCharacter(long novelId, String name, String prompt) {
+        NovelCharacter character = new NovelCharacter();
+        character.name = name.strip();
+        character.prompt = prompt.strip();
+        workflow.novel(novelId).addCharacter(character);
+        em.persist(character);
+        return character;
+    }
+
+    private void reviseCharacter(long novelId, long characterId, String prompt) {
+        doReturn(prompt).when(text).reviseCharacterPrompt(anyString(), anyString(), eq(prompt));
+        characters.revise(novelId, characterId, prompt);
     }
 
     @Test void failedNarrativeRevisionKeepsThePreviousProposal() {
@@ -72,44 +89,107 @@ class WorkflowTest {
     @Test void novelCharactersPersistThroughRelationshipAndOrphansAreRemoved() {
         Novel novel = workflow.createNovel("Reparto", "Texto original.");
         Novel other = workflow.createNovel("Otra obra", "Otro texto.");
-        NovelCharacter character = workflow.addCharacter(novel.id, " Aiko ", " Cabello corto, abrigo blanco. ");
+        NovelCharacter character = addCharacter(novel.id, " Aiko ", " Cabello corto, abrigo blanco. ");
         Long novelId = novel.id;
         Long characterId = character.id;
         assertThat(character.novel).isSameAs(novel);
         em.flush();
         em.clear();
         assertThat(workflow.novel(novelId).characters).extracting(item -> item.name).containsExactly("Aiko");
-        assertThat(workflow.characters(other.id)).isEmpty();
-        workflow.updateCharacter(novelId, characterId, "Aiko", "Cabello corto, abrigo negro.");
+        assertThat(characters.characters(other.id)).isEmpty();
+        reviseCharacter(novelId, characterId, "Cabello corto, abrigo negro.");
         em.flush();
         em.clear();
-        assertThat(workflow.characters(novelId).getFirst().description).contains("abrigo negro");
-        workflow.deleteCharacter(novelId, characterId);
+        assertThat(characters.characters(novelId).getFirst().prompt).contains("abrigo negro");
+        characters.delete(novelId, characterId);
         em.flush();
         em.clear();
         assertThat(workflow.novel(novelId).characters).isEmpty();
         assertThat(em.find(NovelCharacter.class, characterId)).isNull();
     }
 
+    @Test void failedCharacterGenerationAndRevisionDoNotOverwriteStoredPrompt() {
+        Novel novel = workflow.createNovel("Reparto", "Aiko cruza el bosque.");
+        NovelCharacter character = addCharacter(novel.id, "Aiko", "Abrigo claro.");
+        doThrow(new IllegalArgumentException("NVIDIA no disponible"))
+                .when(text).reviseCharacterPrompt(anyString(), anyString(), anyString());
+        assertThatIllegalArgumentException().isThrownBy(() -> characters.revise(novel.id, character.id, "Abrigo oscuro"));
+        assertThat(characters.characters(novel.id)).hasSize(1);
+        assertThat(characters.characters(novel.id).getFirst().prompt).isEqualTo("Abrigo claro.");
+    }
+
     @Test void characterValidationAndOwnershipApplyToChangesAndStudio() {
         Novel novel = prepared();
         Novel other = workflow.createNovel("Otra obra", "Otro texto.");
-        NovelCharacter foreign = workflow.addCharacter(other.id, "Rin", "Ojos verdes.");
+        NovelCharacter foreign = addCharacter(other.id, "Rin", "Ojos verdes.");
         Long panelId = workflow.panels(novel.id).getFirst().id;
-        assertThatIllegalArgumentException().isThrownBy(() -> workflow.addCharacter(novel.id, " ", "Descripcion"));
-        assertThatIllegalArgumentException().isThrownBy(() -> workflow.addCharacter(novel.id, "Nombre", " "));
-        assertThatIllegalArgumentException().isThrownBy(() -> workflow.addCharacter(novel.id, "a".repeat(121), "Descripcion"));
-        assertThatIllegalArgumentException().isThrownBy(() -> workflow.addCharacter(novel.id, "Nombre", "a".repeat(2001)));
-        assertThatIllegalArgumentException().isThrownBy(() -> workflow.updateCharacter(novel.id, foreign.id, "Otro", "Descripcion"));
-        assertThatIllegalArgumentException().isThrownBy(() -> workflow.deleteCharacter(novel.id, foreign.id));
+        assertThatIllegalArgumentException().isThrownBy(() -> characters.revise(novel.id, foreign.id, "Cambio"));
+        assertThatIllegalArgumentException().isThrownBy(() -> characters.delete(novel.id, foreign.id));
         assertThatIllegalArgumentException().isThrownBy(() -> workflow.createDraft(novel.id, List.of(panelId), "", List.of(foreign.id)));
-        assertThat(workflow.characters(other.id).getFirst().name).isEqualTo("Rin");
+        assertThat(characters.characters(other.id).getFirst().name).isEqualTo("Rin");
+    }
+
+    @Test void extractionEnrichesExistingCharactersAndCreatesNewOnesWithoutChangingOtherSheets() {
+        Novel novel = workflow.createNovel("Reparto", "Aiko espera. Rin llega.");
+        Chunk first = new Chunk(); first.novelId = novel.id; first.position = 1; first.content = "Aiko espera.";
+        Chunk second = new Chunk(); second.novelId = novel.id; second.position = 2; second.content = "Rin llega.";
+        em.persist(first); em.persist(second);
+        NovelCharacter original = addCharacter(novel.id, "Aiko", "Abrigo claro.");
+        NovelCharacter absent = addCharacter(novel.id, "Sora", "Pelo corto.");
+        doReturn(List.of(new local.higanbana.domain.ai.PromptCharacterBuilder().name("aiko").description("Abrigo claro y ojos grises.").build(),
+                new local.higanbana.domain.ai.PromptCharacterBuilder().name("Rin").description("Abrigo oscuro.").build()))
+                .when(text).extractCharacters(eq(first.content), anyList());
+        Novel other = workflow.createNovel("Otra", "Otro texto.");
+        assertThatIllegalArgumentException().isThrownBy(() -> characters.extract(other.id, first.id));
+        assertThat(characters.extract(novel.id, first.id)).isEqualTo(2);
+        em.flush(); em.clear();
+        assertThat(workflow.chunks(novel.id).getFirst().charactersExtractedAt).isNotNull();
+        assertThat(workflow.chunks(novel.id).get(1).charactersExtractedAt).isNull();
+        assertThat(characters.characters(novel.id)).extracting(character -> character.name).containsExactly("Aiko", "Sora", "Rin");
+        assertThat(characters.characters(novel.id).getFirst().id).isEqualTo(original.id);
+        assertThat(characters.characters(novel.id).getFirst().prompt).isEqualTo("Abrigo claro y ojos grises.");
+        assertThat(characters.characters(novel.id).get(1).prompt).isEqualTo(absent.prompt);
+        verify(text, times(1)).extractCharacters(eq(first.content), argThat(references ->
+                references.size() == 2 && references.getFirst().name().equals("Aiko")
+                && references.getFirst().description().equals("Abrigo claro.")));
+        verify(text, never()).extractCharacters(eq(second.content), anyList());
+        doReturn(List.of(new local.higanbana.domain.ai.PromptCharacterBuilder().name("Aiko")
+                .description("Abrigo claro y ojos grises.").build())).when(text).extractCharacters(eq(second.content), anyList());
+        assertThat(characters.extract(novel.id, second.id)).isZero();
+        assertThatIllegalArgumentException().isThrownBy(() -> characters.extract(novel.id, first.id));
+    }
+
+    @Test void failedExtractionLeavesChunkPending() {
+        Novel novel = workflow.createNovel("Reparto", "Aiko viaja.");
+        Chunk chunk = new Chunk(); chunk.novelId = novel.id; chunk.position = 1; chunk.content = novel.source;
+        em.persist(chunk);
+        doThrow(new IllegalArgumentException("NVIDIA no disponible")).when(text).extractCharacters(eq(chunk.content), anyList());
+        assertThatIllegalArgumentException().isThrownBy(() -> characters.extract(novel.id, chunk.id));
+        assertThat(workflow.chunks(novel.id).getFirst().charactersExtractedAt).isNull();
+        assertThat(characters.characters(novel.id)).isEmpty();
+    }
+
+    @Test void invalidExtractionDoesNotPartiallyUpdateExistingPrompts() {
+        Novel novel = workflow.createNovel("Reparto", "Aiko y Rin viajan.");
+        NovelCharacter original = addCharacter(novel.id, "Aiko", "Cabello oscuro.");
+        Chunk chunk = new Chunk(); chunk.novelId = novel.id; chunk.position = 1; chunk.content = novel.source;
+        em.persist(chunk);
+        doReturn(List.of(new local.higanbana.domain.ai.PromptCharacterBuilder()
+                .name("Aiko").description("Cabello oscuro y ojos grises.").build(),
+                new local.higanbana.domain.ai.PromptCharacterBuilder()
+                .name(" AIKO ").description("Respuesta duplicada.").build()))
+                .when(text).extractCharacters(eq(chunk.content), anyList());
+        assertThatIllegalArgumentException().isThrownBy(() -> characters.extract(novel.id, chunk.id))
+                .withMessageContaining("duplicados");
+        assertThat(original.prompt).isEqualTo("Cabello oscuro.");
+        assertThat(chunk.charactersExtractedAt).isNull();
+        assertThat(characters.characters(novel.id)).hasSize(1);
     }
 
     @Test void studioUsesSelectedCharacterSnapshotsEvenAfterEditingOrDeletingCharacter() {
         Novel novel = prepared();
-        NovelCharacter selected = workflow.addCharacter(novel.id, "Aiko", "Ojos grises y abrigo rojo.");
-        workflow.addCharacter(novel.id, "Rin", "Sombrero verde.");
+        NovelCharacter selected = addCharacter(novel.id, "Aiko", "Ojos grises y abrigo rojo.");
+        addCharacter(novel.id, "Rin", "Sombrero verde.");
         Long panelId = workflow.panels(novel.id).getFirst().id;
         StudioDraft draft = workflow.createDraft(novel.id, List.of(panelId), "", List.of(selected.id));
         assertThat(draft.prompt).isEqualTo("Propuesta de prueba.");
@@ -117,12 +197,35 @@ class WorkflowTest {
                 && request.characters().size() == 1 && request.characters().getFirst().name().equals("Aiko")));
         assertThat(draft.characterContext).contains("Aiko", "Ojos grises y abrigo rojo.").doesNotContain("Sombrero verde");
         workflow.saveDraft(novel.id, draft.id, "Primer plano al amanecer.");
-        workflow.updateCharacter(novel.id, selected.id, "Aiko", "Ahora lleva abrigo azul.");
-        workflow.deleteCharacter(novel.id, selected.id);
+        reviseCharacter(novel.id, selected.id, "Ahora lleva abrigo azul.");
+        characters.delete(novel.id, selected.id);
         em.flush();
         Candidate candidate = workflow.uploadImage(novel.id, draft.id, imageBytes());
         assertThat(candidate.prompt).contains("Primer plano al amanecer.", "Aiko", "Ojos grises y abrigo rojo.")
                 .doesNotContain("abrigo azul", "Sombrero verde");
+    }
+
+    @Test void promptGeneratorsUseOnlyTheNovelsCatalogAndStudioSnapshotsAutomaticallyConsultedSheets() {
+        Novel novel = prepared();
+        NovelCharacter aiko = addCharacter(novel.id, "Aiko", "Cabello corto y ojos grises.");
+        Novel other = workflow.createNovel("Otra novela", "Rin camina.");
+        addCharacter(other.id, "Rin", "Lunar en la mejilla.");
+        var snapshot = new PromptCharacterBuilder().name(aiko.name).description(aiko.prompt).build();
+        Chunk chunk = workflow.chunks(novel.id).getFirst();
+        workflow.proposePanels(novel.id, chunk.id, 3, "");
+        verify(text).imagePanelPrompts(argThat(request -> request.source().equals(chunk.content)
+                && request.characters().equals(List.of(snapshot))));
+
+        doReturn(new CachedTextBuilder().text("Aiko junto a la ventana.").cacheKey("consulted-characters")
+                .characters(List.of(snapshot)).build()).when(text).studioPrompt(any());
+        StudioDraft draft = workflow.createDraft(novel.id, List.of(workflow.panels(novel.id).getFirst().id), "");
+        verify(text).studioPrompt(argThat(request -> request.characters().isEmpty()
+                && request.availableCharacters().equals(List.of(snapshot))));
+        assertThat(draft.characterContext).contains("Aiko", "Cabello corto y ojos grises.").doesNotContain("Rin");
+        reviseCharacter(novel.id, aiko.id, "Cabello largo.");
+        characters.delete(novel.id, aiko.id);
+        Candidate candidate = workflow.uploadImage(novel.id, draft.id, imageBytes());
+        assertThat(candidate.prompt).contains("Cabello corto y ojos grises.").doesNotContain("Cabello largo.", "Rin");
     }
 
     @Test void confirmedImagePanelPromptIsThePromptSentToImageGeneration() {
@@ -214,8 +317,8 @@ class WorkflowTest {
 
     @Test void selectedCharacterContextIsBoundedWithoutSilentTruncation() {
         Novel novel = prepared();
-        NovelCharacter first = workflow.addCharacter(novel.id, "Aiko", "a".repeat(2000));
-        NovelCharacter second = workflow.addCharacter(novel.id, "Rin", "b".repeat(2000));
+        NovelCharacter first = addCharacter(novel.id, "Aiko", "a".repeat(2000));
+        NovelCharacter second = addCharacter(novel.id, "Rin", "b".repeat(2000));
         Long panelId = workflow.panels(novel.id).getFirst().id;
         assertThatIllegalArgumentException().isThrownBy(() -> workflow.createDraft(novel.id,
                 List.of(panelId), "", List.of(first.id, second.id))).withMessageContaining("Selecciona menos personajes");
@@ -292,7 +395,11 @@ class WorkflowTest {
         assertThat(candidate.image).isNull();
         assertThatIllegalArgumentException().isThrownBy(() -> workflow.reject(novel.id, candidate.id));
         Candidate duplicate = workflow.uploadImage(novel.id, draft.id, imageBytes());
-        assertThatIllegalArgumentException().isThrownBy(() -> workflow.approve(novel.id, duplicate.id));
+        MangaEntry replacement = workflow.approve(novel.id, duplicate.id);
+        assertThat(workflow.reader(novel.id)).extracting(item -> item.candidateId).containsExactly(duplicate.id);
+        assertThat(replacement.filename).isNotEqualTo(entry.filename);
+        assertThat(candidate.state).isEqualTo(ReviewState.REJECTED);
+        assertThatIllegalArgumentException().isThrownBy(() -> workflow.candidateImage(novel.id, candidate.id));
     }
 
     @Test void deletingUnusedAndLegacyDraftsPreservesLegacyCandidatePanels() {

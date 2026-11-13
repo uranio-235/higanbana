@@ -27,6 +27,7 @@ import static org.mockito.Mockito.*;
 import static org.mockito.ArgumentMatchers.*;
 import local.higanbana.domain.Chunking;
 import local.higanbana.application.Workflow;
+import local.higanbana.application.CharacterManager;
 import local.higanbana.infrastructure.ai.TextAssistant;
 import local.higanbana.infrastructure.ai.JpaAiResponseCache;
 
@@ -42,6 +43,7 @@ class WebFlowTest {
     }
     @Autowired MockMvc mvc;
     @Autowired Workflow workflow;
+    @Autowired CharacterManager characters;
         @org.springframework.boot.test.web.server.LocalServerPort int port;
         @MockitoSpyBean TextAssistant text;
     @Autowired org.springframework.core.env.Environment environment;
@@ -78,6 +80,11 @@ class WebFlowTest {
                 .when(text).imagePanelPrompts(any());
         doReturn(new local.higanbana.domain.ai.CachedTextBuilder().text("Propuesta de prueba.").cacheKey("test-key").build())
                 .when(text).studioPrompt(any());
+        doAnswer(invocation -> invocation.getArgument(2, String.class))
+                .when(text).reviseCharacterPrompt(anyString(), anyString(), anyString());
+        doReturn(List.of(new local.higanbana.domain.ai.PromptCharacterBuilder()
+                .name("Aiko").description("Ojos grises, abrigo rojo.").build()))
+                .when(text).extractCharacters(anyString(), anyList());
         session = (MockHttpSession) mvc.perform(get("/")).andExpect(status().isOk())
                 .andExpect(content().string(containsString("Nueva obra"))).andReturn().getRequest().getSession();
     }
@@ -180,7 +187,10 @@ class WebFlowTest {
         workflow.proposePanels(novel.id, chunk.id, 2, "");
         workflow.confirmPanels(novel.id, chunk.id);
         var panels = workflow.panels(novel.id);
-        var character = workflow.addCharacter(novel.id, "Yuna", "Uniforme escolar.");
+        doReturn(List.of(new local.higanbana.domain.ai.PromptCharacterBuilder()
+                .name("Yuna").description("Uniforme escolar.").build())).when(text).extractCharacters(anyString(), anyList());
+        characters.extract(novel.id, chunk.id);
+        var character = characters.characters(novel.id).getFirst();
         doThrow(new local.higanbana.domain.ai.TextProviderException("NVIDIA esta temporalmente sobrecargado."))
                 .when(text).studioPrompt(any());
         String base = "/novels/" + novel.id;
@@ -248,24 +258,31 @@ class WebFlowTest {
         long novelId = workflow.novels().getFirst().id;
         String base = "/novels/" + novelId;
         mvc.perform(get(base + "/characters").session(session)).andExpect(status().isOk())
-                .andExpect(content().string(containsString("Todavia no hay personajes")));
-        mvc.perform(form(base + "/characters").param("name", "Aiko").param("description", "Ojos grises, abrigo rojo."))
-                .andExpect(status().is3xxRedirection());
-        long characterId = workflow.characters(novelId).getFirst().id;
-        mvc.perform(form(base + "/characters/" + characterId + "/save")
-                .param("name", "Aiko").param("description", "Ojos grises, abrigo blanco."))
-                .andExpect(status().is3xxRedirection());
-        mvc.perform(get(base + "/characters").session(session)).andExpect(status().isOk())
-                .andExpect(content().string(containsString("Ojos grises, abrigo blanco.")));
+                .andExpect(content().string(containsString("Todavia no hay personajes")))
+                .andExpect(content().string(containsString("Confirma primero los chunks")))
+                .andExpect(content().string(org.hamcrest.Matchers.not(containsString("character-name"))));
         mvc.perform(get(base + "/chunks").session(session)).andExpect(status().isOk())
                 .andExpect(content().string(containsString("Criterio narrativo")))
                 .andExpect(content().string(org.hamcrest.Matchers.not(containsString("name=\"limit\""))));
-        mvc.perform(form(base + "/chunks/propose").param("revision", "Pausas"))
-                .andExpect(status().is3xxRedirection());
+        mvc.perform(form(base + "/chunks/propose").param("revision", "Pausas")).andExpect(status().is3xxRedirection());
         mvc.perform(get(base + "/chunks").session(session)).andExpect(status().isOk())
                 .andExpect(content().string(containsString("texto integro")));
         mvc.perform(form(base + "/chunks/confirm")).andExpect(status().is3xxRedirection());
         long chunkId = workflow.chunks(novelId).getFirst().id;
+        doReturn(List.of(new local.higanbana.domain.ai.PromptCharacterBuilder().name("Aiko").description("Ojos grises, abrigo rojo.").build(),
+                new local.higanbana.domain.ai.PromptCharacterBuilder().name("Rin").description("Sombrero.").build()))
+                .when(text).extractCharacters(anyString(), anyList());
+        mvc.perform(form(base + "/characters").param("chunkId", Long.toString(chunkId)))
+                .andExpect(status().is3xxRedirection());
+        assertThat(characters.characters(novelId)).extracting(character -> character.name).containsExactly("Aiko", "Rin");
+        long characterId = characters.characters(novelId).getFirst().id;
+        mvc.perform(form(base + "/characters/" + characterId + "/revise")
+                .param("instructions", "Ojos grises, abrigo blanco."))
+                .andExpect(status().is3xxRedirection());
+        mvc.perform(get(base + "/characters").session(session)).andExpect(status().isOk())
+                .andExpect(content().string(containsString("Ojos grises, abrigo blanco.")))
+                .andExpect(content().string(containsString("readonly")))
+                .andExpect(content().string(org.hamcrest.Matchers.not(containsString("name=\"description\""))));
         String chunk = base + "/chunks/" + chunkId;
         mvc.perform(get(base + "/panels").session(session)).andExpect(status().isOk());
         mvc.perform(form(chunk + "/panels/propose").param("count", "1")).andExpect(status().is3xxRedirection());
@@ -306,7 +323,7 @@ class WebFlowTest {
         long candidateId = workflow.candidates(novelId).getFirst().id;
         assertThat(workflow.candidate(novelId, candidateId).prompt).contains("Aiko", "Ojos grises, abrigo blanco.");
         mvc.perform(form(base + "/characters/" + characterId + "/delete")).andExpect(status().is3xxRedirection());
-        assertThat(workflow.characters(novelId)).isEmpty();
+        assertThat(characters.characters(novelId)).extracting(character -> character.name).containsExactly("Rin");
         assertThat(workflow.candidate(novelId, candidateId).prompt).contains("Ojos grises, abrigo blanco.");
         mvc.perform(get(base + "/generation").session(session)).andExpect(status().isOk())
                 .andExpect(content().string(containsString("Pendiente")));
@@ -374,23 +391,87 @@ class WebFlowTest {
         var novel = workflow.createNovel("Reparto web", "Texto original.");
         var other = workflow.createNovel("Otra novela", "Otro texto.");
         String base = "/novels/" + novel.id;
-        mvc.perform(form(base + "/characters").param("name", " ").param("description", "Descripcion"))
-                .andExpect(status().isBadRequest());
-        mvc.perform(post(base + "/characters").session(session).param("name", "Aiko").param("description", "Descripcion"))
+        workflow.proposeChunks(novel.id, ""); workflow.confirmChunks(novel.id);
+        long chunkId = workflow.chunks(novel.id).getFirst().id;
+        mvc.perform(post(base + "/characters").session(session))
                 .andExpect(status().isForbidden());
-        mvc.perform(form(base + "/characters").param("name", "Aiko").param("description", "<script>alert(1)</script>"))
+        doReturn(List.of(new local.higanbana.domain.ai.PromptCharacterBuilder().name("Aiko")
+                .description("<script>alert(1)</script>").build())).when(text).extractCharacters(anyString(), anyList());
+        mvc.perform(form(base + "/characters").param("chunkId", Long.toString(chunkId)))
                 .andExpect(status().is3xxRedirection());
-        long characterId = workflow.characters(novel.id).getFirst().id;
+        long characterId = characters.characters(novel.id).getFirst().id;
         mvc.perform(get(base + "/characters").session(session)).andExpect(status().isOk())
                 .andExpect(content().string(containsString("&lt;script&gt;alert(1)&lt;/script&gt;")));
-        mvc.perform(form("/novels/" + other.id + "/characters/" + characterId + "/save")
-                .param("name", "Ajeno").param("description", "Cambio"))
+        mvc.perform(form("/novels/" + other.id + "/characters/" + characterId + "/revise")
+                .param("instructions", "Cambio"))
                 .andExpect(status().isBadRequest());
         mvc.perform(form("/novels/" + other.id + "/characters/" + characterId + "/delete"))
                 .andExpect(status().isBadRequest());
         mvc.perform(post(base + "/characters/" + characterId + "/delete").session(session))
                 .andExpect(status().isForbidden());
-        assertThat(workflow.characters(novel.id)).hasSize(1);
+        assertThat(characters.characters(novel.id)).hasSize(1);
+    }
+
+    @Test void characterToolsAreSeparateFromWorkflowAndUnavailableWithoutProvider() throws Exception {
+        var novel = workflow.createNovel("Herramientas", "Aiko camina.");
+        doReturn(false).when(text).characterPromptsAvailable();
+        String page = mvc.perform(get("/novels/" + novel.id + "/characters").session(session))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("generacion de personajes no esta disponible")))
+                .andExpect(content().string(containsString("Examinar siguiente chunk")))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(page.indexOf("Lector</span>")).isGreaterThanOrEqualTo(0)
+                .isLessThan(page.indexOf("Personajes</a>"));
+        assertThat(page).contains("class=\"sidebar-tools\"");
+    }
+
+    @Test void extractionReportsWhenNoNewCharactersAreFound() throws Exception {
+        var novel = workflow.createNovel("Sin reparto", "Llueve.");
+        workflow.proposeChunks(novel.id, ""); workflow.confirmChunks(novel.id);
+        long chunkId = workflow.chunks(novel.id).getFirst().id;
+        doReturn(List.of()).when(text).extractCharacters(anyString(), anyList());
+        var result = mvc.perform(form("/novels/" + novel.id + "/characters").param("chunkId", Long.toString(chunkId)))
+                .andExpect(status().is3xxRedirection()).andReturn();
+        assertThat(result.getFlashMap().get("notice")).isEqualTo("No hay cambios en las fichas de personajes.");
+        assertThat(characters.characters(novel.id)).isEmpty();
+    }
+
+    @Test void characterExtractionAdvancesAcrossChunksAndDisablesAtEnd() throws Exception {
+        var novel = workflow.createNovel("Dos escenas", "A".repeat(200) + "B".repeat(200));
+        workflow.proposeChunks(novel.id, 200, ""); workflow.confirmChunks(novel.id);
+        var chunks = workflow.chunks(novel.id);
+        String base = "/novels/" + novel.id + "/characters";
+        mvc.perform(get(base).session(session)).andExpect(status().isOk())
+                .andExpect(content().string(containsString("Chunk actual: ninguno examinado")))
+                .andExpect(content().string(containsString("Chunk 1")));
+        mvc.perform(form(base).param("chunkId", chunks.get(1).id.toString()))
+                .andExpect(status().is3xxRedirection());
+        mvc.perform(get(base).session(session)).andExpect(status().isOk())
+                .andExpect(content().string(containsString("Chunk actual: 2")))
+                .andExpect(content().string(containsString("Chunk 1")));
+        mvc.perform(form(base).param("chunkId", chunks.getFirst().id.toString()))
+                .andExpect(status().is3xxRedirection());
+        mvc.perform(get(base).session(session)).andExpect(status().isOk())
+                .andExpect(content().string(containsString("Chunk actual: 1")))
+                .andExpect(content().string(containsString("No hay chunks pendientes")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("disabled=\"disabled\"")));
+    }
+
+    @Test void characterProviderErrorKeepsTheSameChunkAvailable() throws Exception {
+        var novel = workflow.createNovel("Error de proveedor", "Aiko viaja.");
+        workflow.proposeChunks(novel.id, ""); workflow.confirmChunks(novel.id);
+        var chunk = workflow.chunks(novel.id).getFirst();
+        doThrow(new local.higanbana.domain.ai.TextProviderException("NVIDIA no disponible."))
+                .when(text).extractCharacters(eq(chunk.content), anyList());
+        String base = "/novels/" + novel.id + "/characters";
+        var result = mvc.perform(form(base).param("chunkId", chunk.id.toString()))
+                .andExpect(status().is3xxRedirection()).andReturn();
+        mvc.perform(get(base).session(session).flashAttrs(result.getFlashMap()))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("NVIDIA no disponible.")))
+                .andExpect(content().string(containsString("Chunk actual: ninguno examinado")))
+                .andExpect(content().string(containsString("Chunk 1")));
+        assertThat(workflow.chunks(novel.id).getFirst().charactersExtractedAt).isNull();
     }
 
     @Test void acceptsUtf8FileAndBlocksCrossNovelHttpRequests() throws Exception {

@@ -56,4 +56,5 @@ public interface WorkflowRepository {
     List<MangaEntry> findEntries(long novelId);
     Optional<MangaEntry> findEntry(long id);
     void saveEntry(MangaEntry entry);
+    void deleteEntry(MangaEntry entry);
 }

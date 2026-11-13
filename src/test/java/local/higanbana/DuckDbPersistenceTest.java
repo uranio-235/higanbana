@@ -1,6 +1,7 @@
 package local.higanbana;
 
 import local.higanbana.application.Workflow;
+import local.higanbana.application.CharacterManager;
 import local.higanbana.domain.entity.Novel;
 import local.higanbana.domain.entity.ChunkPlan;
 import local.higanbana.domain.entity.Chunk;
@@ -37,6 +38,7 @@ class DuckDbPersistenceTest {
 
     @Autowired DataSource dataSource;
     @Autowired Workflow workflow;
+    @Autowired CharacterManager characters;
     @Autowired JpaAiResponseCache cache;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager em;
@@ -46,6 +48,25 @@ class DuckDbPersistenceTest {
     void stubStudioPrompt() {
         doReturn(new local.higanbana.domain.ai.CachedTextBuilder().text("Propuesta de prueba.").cacheKey("test-key").build())
                 .when(text).studioPrompt(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    @Transactional
+    void characterExtractionPersistsChunkProgressAndCharactersInDuckDb() {
+        Novel novel = workflow.createNovel("Reparto DuckDB", "Aiko viaja.");
+        Chunk chunk = new Chunk();
+        chunk.novelId = novel.id;
+        chunk.position = 1;
+        chunk.content = novel.source;
+        em.persist(chunk);
+        em.flush();
+        doReturn(java.util.List.of(new local.higanbana.domain.ai.PromptCharacterBuilder()
+                .name("Aiko").description("Abrigo oscuro.").build())).when(text).extractCharacters(org.mockito.ArgumentMatchers.eq(chunk.content), org.mockito.ArgumentMatchers.anyList());
+        assertThat(characters.extract(novel.id, chunk.id)).isEqualTo(1);
+        em.flush();
+        em.clear();
+        assertThat(workflow.chunks(novel.id).getFirst().charactersExtractedAt).isNotNull();
+        assertThat(characters.characters(novel.id).getFirst().prompt).isEqualTo("Abrigo oscuro.");
     }
 
     @Test

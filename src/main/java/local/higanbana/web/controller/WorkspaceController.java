@@ -2,6 +2,7 @@ package local.higanbana.web.controller;
 
 import jakarta.validation.Valid;
 import local.higanbana.application.Workflow;
+import local.higanbana.application.CharacterManager;
 import local.higanbana.web.dto.NovelInput;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
@@ -23,8 +24,12 @@ import static local.higanbana.web.WebRoutes.novel;
 @Controller
 public class WorkspaceController {
     private final Workflow workflow;
+    private final CharacterManager characters;
 
-    public WorkspaceController(Workflow workflow) { this.workflow = workflow; }
+    public WorkspaceController(Workflow workflow, CharacterManager characters) {
+        this.workflow = workflow;
+        this.characters = characters;
+    }
 
     @ModelAttribute public void common(Model model) {
         model.addAttribute("textProvenance", workflow.textProvenance());
@@ -32,6 +37,7 @@ public class WorkspaceController {
         model.addAttribute("chunkingAvailable", workflow.chunkingAvailable());
         model.addAttribute("imagePanelPromptsAvailable", workflow.imagePanelPromptsAvailable());
         model.addAttribute("imagePanelPromptProvenance", workflow.imagePanelPromptProvenance());
+        model.addAttribute("characterPromptsAvailable", characters.available());
     }
 
     @GetMapping("/") public String home(Model model) {
@@ -70,7 +76,12 @@ public class WorkspaceController {
         model.addAttribute("view", view);
         var chunks = workflow.chunks(novelId);
         model.addAttribute("chunks", chunks);
-        if (view.equals("characters") || view.equals("studio")) { model.addAttribute("characters", workflow.characters(novelId)); }
+        if (view.equals("characters") || view.equals("studio")) { model.addAttribute("characters", characters.characters(novelId)); }
+        if (view.equals("characters")) {
+            model.addAttribute("currentCharacterChunk", chunks.stream().filter(chunk -> chunk.charactersExtractedAt != null)
+                    .max(java.util.Comparator.comparing(chunk -> chunk.charactersExtractedAt)).orElse(null));
+            model.addAttribute("pendingCharacterChunks", chunks.stream().filter(chunk -> chunk.charactersExtractedAt == null).toList());
+        }
         if (view.equals("chunks")) { model.addAttribute("plan", workflow.chunkPlan(novelId)); }
         if (view.equals("panels") && !chunks.isEmpty()) {
             var chunk = workflow.chunk(novelId, chunkId == null ? chunks.getFirst().id : chunkId);
