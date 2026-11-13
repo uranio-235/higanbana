@@ -51,6 +51,47 @@ class TextAssistantTest {
                 return prompt.substring(prompt.indexOf("\n\n") + 2);
         }
 
+        @Test void coverPromptUsesSelectedFragmentsAndRejectsMissingPrompt() throws Exception {
+            RestClient.Builder builder = RestClient.builder();
+            var server = MockRestServiceServer.bindTo(builder).build();
+            server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                    .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("La lluvia")))
+                    .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("El faro")))
+                    .andExpect(jsonPath("$.messages[0].content", org.hamcrest.Matchers.containsString("Reserva espacio para el titulo")))
+                    .andRespond(withSuccess(completion("{\"prompt\":\"Un faro bajo la lluvia.\"}"), MediaType.APPLICATION_JSON));
+            server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                    .andRespond(withSuccess(completion("{\"prompt\":null}"), MediaType.APPLICATION_JSON));
+            var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
+                    "test-model", new ObjectMapper(), builder);
+            String prompt = assistant.coverPrompt("La flor que crecía bajo la lluvia", "La lluvia\nEl faro");
+            assertThat(prompt).contains("\"La flor que crecía bajo la lluvia\"", "texto visible y legible",
+                    "no lo traduzcas ni lo cambies", "Un faro bajo la lluvia.");
+            assertThatIllegalArgumentException().isThrownBy(() -> assistant.coverPrompt("Otra", "Texto"))
+                    .withMessageContaining("portada no valido");
+            server.verify();
+        }
+
+        @Test void coverPromptReservesSpaceForExactTitleAndRejectsOversizeResponse() throws Exception {
+            String title = "¡La flor: «bajo la lluvia»!";
+            String prefix = new StringBuilder("Incluye en la portada el siguiente titulo exacto como texto visible y legible, ")
+                    .append("con tipografia integrada en la composicion. Conserva todas sus letras, tildes y signos; ")
+                    .append("no lo traduzcas ni lo cambies. No dibujes las comillas exteriores que delimitan el titulo:\n\"")
+                    .append(title).append("\"\n\n").toString();
+            int limit = 4000 - prefix.length();
+            RestClient.Builder builder = RestClient.builder();
+            var server = MockRestServiceServer.bindTo(builder).build();
+            server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                    .andRespond(withSuccess(completion(new ObjectMapper().writeValueAsString(Map.of("prompt", "x".repeat(limit)))), MediaType.APPLICATION_JSON));
+            server.expect(requestTo("https://integrate.api.nvidia.com/v1/chat/completions"))
+                    .andRespond(withSuccess(completion(new ObjectMapper().writeValueAsString(Map.of("prompt", "x".repeat(limit + 1)))), MediaType.APPLICATION_JSON));
+            var assistant = assistant("nvidia", "https://integrate.api.nvidia.com", "test-key",
+                    "test-model", new ObjectMapper(), builder);
+            assertThat(assistant.coverPrompt(title, "Primera escena")).hasSize(4000).startsWith(prefix);
+            assertThatIllegalArgumentException().isThrownBy(() -> assistant.coverPrompt(title, "Otra escena"))
+                    .withMessageContaining("portada no valido");
+            server.verify();
+        }
+
         private TextAssistant assistant(String mode, String baseUrl, String key, String model,
                                                                    ObjectMapper mapper, RestClient.Builder builder) {
                 return assistant(mode, baseUrl, key, model, mapper, builder, new InMemoryAiResponseCache());

@@ -2,6 +2,7 @@ package local.higanbana;
 
 import local.higanbana.application.Workflow;
 import local.higanbana.application.CharacterManager;
+import local.higanbana.application.CoverManager;
 import local.higanbana.domain.entity.Novel;
 import local.higanbana.domain.entity.ChunkPlan;
 import local.higanbana.domain.entity.Chunk;
@@ -39,6 +40,7 @@ class DuckDbPersistenceTest {
     @Autowired DataSource dataSource;
     @Autowired Workflow workflow;
     @Autowired CharacterManager characters;
+    @Autowired CoverManager covers;
     @Autowired JpaAiResponseCache cache;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager em;
@@ -48,6 +50,64 @@ class DuckDbPersistenceTest {
     void stubStudioPrompt() {
         doReturn(new local.higanbana.domain.ai.CachedTextBuilder().text("Propuesta de prueba.").cacheKey("test-key").build())
                 .when(text).studioPrompt(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    @Transactional
+    void coverPersistsAlongsideCharactersAndChunksInDuckDb() throws Exception {
+        Novel novel = workflow.createNovel("Portada DuckDB", "Aiko viaja.");
+        Chunk chunk = new Chunk();
+        chunk.novelId = novel.id;
+        chunk.position = 1;
+        chunk.content = novel.source;
+        em.persist(chunk);
+        var character = new local.higanbana.domain.entity.NovelCharacter();
+        character.name = "Aiko";
+        character.prompt = "Abrigo oscuro.";
+        novel.addCharacter(character);
+        em.persist(character);
+        em.flush();
+        covers.savePrompt(novel.id, "Portada del viaje.");
+        var output = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(2, 2, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", output);
+        covers.upload(novel.id, "Portada del viaje.", output.toByteArray());
+        em.flush();
+        em.clear();
+        assertThat(workflow.novel(novel.id).coverPrompt).isEqualTo("Portada del viaje.");
+        assertThat(covers.image(novel.id).mediaType()).isEqualTo("image/png");
+    }
+
+    @Test
+    void coverCommitsForNovelWithExistingCharacterInDuckDb() throws Exception {
+        Novel novel = workflow.createNovel("Portada guardada", "Aiko viaja.");
+        jdbc.update("INSERT INTO novel_character (id, version, novel_id, name, description) VALUES (?, 0, ?, ?, ?)",
+                999999L, novel.id, "Aiko", "Abrigo oscuro.");
+        var output = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(2, 2, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", output);
+        covers.upload(novel.id, "Portada persistente", output.toByteArray());
+        assertThat(workflow.novel(novel.id).coverPrompt).isEqualTo("Portada persistente");
+        assertThat(covers.image(novel.id).bytes()).isNotEmpty();
+    }
+
+    @Test
+    void coverColumnsCanBeAddedToExistingDuckDbWithCharacters() throws Exception {
+        try (var connection = java.sql.DriverManager.getConnection("jdbc:duckdb:");
+             var statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE novel (id BIGINT PRIMARY KEY, title VARCHAR, source TEXT)");
+            statement.execute("CREATE TABLE novel_character (id BIGINT PRIMARY KEY, novel_id BIGINT REFERENCES novel(id))");
+            statement.execute("INSERT INTO novel VALUES (1, 'Existente', 'Texto')");
+            statement.execute("INSERT INTO novel_character VALUES (2, 1)");
+            for (int attempt = 0; attempt < 2; attempt++) {
+                statement.execute("ALTER TABLE novel ADD COLUMN IF NOT EXISTS cover_prompt TEXT");
+                statement.execute("ALTER TABLE novel ADD COLUMN IF NOT EXISTS cover_filename VARCHAR");
+                statement.execute("ALTER TABLE novel ADD COLUMN IF NOT EXISTS cover_media_type VARCHAR");
+            }
+            try (var result = statement.executeQuery("SELECT title, cover_prompt FROM novel WHERE id = 1")) {
+                assertThat(result.next()).isTrue();
+                assertThat(result.getString(1)).isEqualTo("Existente");
+                assertThat(result.getString(2)).isNull();
+            }
+        }
     }
 
     @Test

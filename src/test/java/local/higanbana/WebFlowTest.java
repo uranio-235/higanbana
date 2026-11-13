@@ -28,6 +28,7 @@ import static org.mockito.ArgumentMatchers.*;
 import local.higanbana.domain.Chunking;
 import local.higanbana.application.Workflow;
 import local.higanbana.application.CharacterManager;
+import local.higanbana.application.CoverManager;
 import local.higanbana.infrastructure.ai.TextAssistant;
 import local.higanbana.infrastructure.ai.JpaAiResponseCache;
 
@@ -44,6 +45,8 @@ class WebFlowTest {
     @Autowired MockMvc mvc;
     @Autowired Workflow workflow;
     @Autowired CharacterManager characters;
+    @Autowired CoverManager covers;
+    @Autowired org.springframework.transaction.PlatformTransactionManager transactionManager;
         @org.springframework.boot.test.web.server.LocalServerPort int port;
         @MockitoSpyBean TextAssistant text;
     @Autowired org.springframework.core.env.Environment environment;
@@ -151,6 +154,131 @@ class WebFlowTest {
                 javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(2, 2, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", output);
                 return new MockMultipartFile("image", "panel.png", "image/png", output.toByteArray());
         }
+
+    @Test void coverIsOptionalEditableReplaceableAndPrecedesPanelsAndPdf() throws Exception {
+        var novel = workflow.createNovel("Portada", "Aiko entra al faro bajo la lluvia.");
+        workflow.proposeChunks(novel.id, 5000, "");
+        workflow.confirmChunks(novel.id);
+        var chunk = workflow.chunks(novel.id).getFirst();
+        String base = "/novels/" + novel.id;
+        doReturn("Portada del faro.").when(text).coverPrompt(eq(novel.title), contains(chunk.content));
+        mvc.perform(get(base + "/cover").session(session)).andExpect(status().isOk())
+                .andExpect(content().string(containsString("HERRAMIENTA OPCIONAL")));
+        mvc.perform(form(base + "/cover/generate").param("chunkIds", chunk.id.toString()))
+                .andExpect(status().is3xxRedirection());
+        assertThat(workflow.novel(novel.id).coverPrompt).isEqualTo("Portada del faro.");
+        mvc.perform(multipart(base + "/cover/upload").file(image()).session(session)
+                .param("_csrf", session.getAttribute("csrf").toString()).param("prompt", "Portada editada"))
+                .andExpect(status().is3xxRedirection());
+        var stored = workflow.novel(novel.id);
+        String firstFile = stored.coverFilename;
+        assertThat(stored.coverPrompt).isEqualTo("Portada editada");
+        assertThat(Files.exists(storage.resolve(firstFile))).isTrue();
+        mvc.perform(get(base + "/cover/image").session(session)).andExpect(status().isOk())
+                .andExpect(content().contentType("image/png"));
+        byte[] coverOnlyPdf = mvc.perform(get(base + "/reader.pdf").session(session))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        try (PDDocument pdf = Loader.loadPDF(coverOnlyPdf)) {
+            assertThat(pdf.getNumberOfPages()).isEqualTo(1);
+        }
+
+        workflow.proposePanels(novel.id, chunk.id, 1, "");
+        workflow.confirmPanels(novel.id, chunk.id);
+        var draft = workflow.createDraft(novel.id, List.of(workflow.panels(novel.id).getFirst().id), "");
+        var panelBytes = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(2, 4, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", panelBytes);
+        var candidate = workflow.uploadImage(novel.id, draft.id, panelBytes.toByteArray());
+        var entry = workflow.approve(novel.id, candidate.id);
+        String reader = mvc.perform(get(base + "/reader").session(session)).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        assertThat(reader.indexOf(base + "/cover/image")).isLessThan(reader.indexOf(base + "/entries/"));
+        byte[] pdfBytes = mvc.perform(get(base + "/reader.pdf").session(session))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        try (PDDocument pdf = Loader.loadPDF(pdfBytes)) {
+            assertThat(pdf.getNumberOfPages()).isEqualTo(2);
+            assertThat(pdf.getPage(0).getMediaBox().getWidth()).isEqualTo(pdf.getPage(0).getMediaBox().getHeight());
+            assertThat(pdf.getPage(1).getMediaBox().getHeight()).isGreaterThan(pdf.getPage(1).getMediaBox().getWidth());
+        }
+        mvc.perform(multipart(base + "/cover/upload").file(image()).session(session)
+                .param("_csrf", session.getAttribute("csrf").toString()).param("prompt", "Otra portada"))
+                .andExpect(status().is3xxRedirection());
+        assertThat(workflow.novel(novel.id).coverFilename).isNotEqualTo(firstFile);
+        assertThat(Files.exists(storage.resolve(firstFile))).isFalse();
+        Files.delete(storage.resolve(workflow.novel(novel.id).coverFilename));
+        Files.delete(storage.resolve(entry.filename));
+    }
+
+    @Test void coverRejectsForeignChunksAndInvalidUploadsWithoutReplacingSavedState() throws Exception {
+        var novel = workflow.createNovel("Una novela", "Una escena.");
+        var other = workflow.createNovel("Otra novela", "Otra escena.");
+        workflow.proposeChunks(other.id, 5000, "");
+        workflow.confirmChunks(other.id);
+        String base = "/novels/" + novel.id;
+        mvc.perform(form(base + "/cover/generate").param("chunkIds", workflow.chunks(other.id).getFirst().id.toString()))
+                .andExpect(status().isBadRequest());
+        covers.upload(novel.id, "Prompt valido", image().getBytes());
+        String filename = workflow.novel(novel.id).coverFilename;
+        var invalid = new MockMultipartFile("image", "bad.png", "image/png", new byte[] {1, 2, 3});
+        mvc.perform(multipart(base + "/cover/upload").file(invalid).session(session)
+                .param("_csrf", session.getAttribute("csrf").toString()).param("prompt", "Otro prompt"))
+                .andExpect(status().isBadRequest());
+        assertThat(workflow.novel(novel.id).coverFilename).isEqualTo(filename);
+        assertThat(workflow.novel(novel.id).coverPrompt).isEqualTo("Prompt valido");
+        mvc.perform(get("/novels/" + other.id + "/cover/image").session(session)).andExpect(status().isBadRequest());
+        Files.delete(storage.resolve(filename));
+    }
+
+    @Test void coverProviderFailureKeepsExistingPromptAndImage() throws Exception {
+        var novel = workflow.createNovel("Una novela", "Una escena.");
+        workflow.proposeChunks(novel.id, 5000, "");
+        workflow.confirmChunks(novel.id);
+        covers.upload(novel.id, "Prompt guardado", image().getBytes());
+        String filename = workflow.novel(novel.id).coverFilename;
+        doThrow(new local.higanbana.domain.ai.TextProviderException("Proveedor no disponible"))
+                .when(text).coverPrompt(anyString(), anyString());
+        mvc.perform(form("/novels/" + novel.id + "/cover/generate")
+                .param("chunkIds", workflow.chunks(novel.id).getFirst().id.toString()))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(flash().attribute("coverError", "Proveedor no disponible"));
+        assertThat(workflow.novel(novel.id).coverPrompt).isEqualTo("Prompt guardado");
+        assertThat(workflow.novel(novel.id).coverFilename).isEqualTo(filename);
+        Files.delete(storage.resolve(filename));
+    }
+
+    @Test void coverGenerationUsesOnlySelectedChunksInNarrativeOrder() {
+        var novel = workflow.createNovel("Fragmentos", "A".repeat(5000) + "B".repeat(5000) + "C".repeat(5000));
+        workflow.proposeChunks(novel.id, 5000, "");
+        workflow.confirmChunks(novel.id);
+        var chunks = workflow.chunks(novel.id);
+        assertThat(chunks).hasSize(3);
+        doReturn("Una portada.").when(text).coverPrompt(anyString(), anyString());
+        covers.generate(novel.id, List.of(chunks.get(2).id, chunks.get(0).id));
+        var context = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(text).coverPrompt(eq(novel.title), context.capture());
+        assertThat(context.getValue()).contains(chunks.get(0).content, chunks.get(2).content)
+                .doesNotContain(chunks.get(1).content);
+        assertThat(context.getValue().indexOf(chunks.get(0).content))
+                .isLessThan(context.getValue().indexOf(chunks.get(2).content));
+        assertThatIllegalArgumentException().isThrownBy(() -> covers.generate(novel.id, List.of(chunks.get(0).id, chunks.get(0).id)));
+    }
+
+    @Test void rolledBackCoverReplacementPreservesOldFileAndRemovesNewFile() throws Exception {
+        var novel = workflow.createNovel("Portada transaccional", "Una escena.");
+        byte[] imageBytes = image().getBytes();
+        covers.upload(novel.id, "Original", imageBytes);
+        String oldFile = workflow.novel(novel.id).coverFilename;
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        String newFile = transaction.execute(status -> {
+            covers.upload(novel.id, "Nueva", imageBytes);
+            String filename = workflow.novel(novel.id).coverFilename;
+            status.setRollbackOnly();
+            return filename;
+        });
+        assertThat(workflow.novel(novel.id).coverFilename).isEqualTo(oldFile);
+        assertThat(Files.exists(storage.resolve(oldFile))).isTrue();
+        assertThat(Files.exists(storage.resolve(newFile))).isFalse();
+        Files.delete(storage.resolve(oldFile));
+    }
 
         @Test void studioAcceptsAllPanelsOfAChunkAndIncludesTheOriginalScene() throws Exception {
                 var novel = workflow.createNovel("Escena", "La lampara roja ilumina la ventana bajo la lluvia.");

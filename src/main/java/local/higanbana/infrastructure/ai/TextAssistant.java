@@ -139,6 +139,31 @@ public class TextAssistant {
     public boolean imagePanelPromptsAvailable() { return model != null; }
 
     public boolean characterPromptsAvailable() { return model != null; }
+    public boolean coverPromptsAvailable() { return model != null; }
+
+    public String coverPrompt(String title, String source) {
+        if (model == null) {
+            throw new TextProviderException("Generar el prompt de portada requiere configurar NVIDIA y un modelo de texto.");
+        }
+        String titleInstruction = new StringBuilder("Incluye en la portada el siguiente titulo exacto como texto visible y legible, ")
+                .append("con tipografia integrada en la composicion. Conserva todas sus letras, tildes y signos; ")
+                .append("no lo traduzcas ni lo cambies. No dibujes las comillas exteriores que delimitan el titulo:\n\"")
+                .append(title).append("\"\n\n").toString();
+        int descriptionLimit = 4000 - titleInstruction.length();
+        String task = new StringBuilder("Crea un prompt visual en español para generar una portada de manga ")
+                .append("a partir de los fragmentos de la novela. Describe composicion, ambiente y personajes ")
+                .append("segun el texto, sin inventar rasgos ni acontecimientos. No crees una pagina de viñetas. ")
+                .append("Reserva espacio para el titulo de la novela, que se añadira por separado como texto legible. ")
+                .append("No incluyas instrucciones que prohiban texto ni inventes otros textos. ")
+                .append("Devuelve SOLO JSON {\"prompt\":\"prompt visual\"}, maximo ")
+                .append(descriptionLimit).append(" caracteres, sin Markdown.").toString();
+        String context = new StringBuilder("TITULO: ").append(title)
+                .append("\nFRAGMENTOS SELECCIONADOS:\n").append(source).toString();
+        String response = callCached(new TextRequestBuilder().task(task).context(context).revision("")
+                .operation("cover-prompt-v2").validator(value -> validTextField(value, "prompt", descriptionLimit, false))
+                .contextLimit(1_001_000).build()).text();
+        return new StringBuilder(titleInstruction).append(textField(response, "prompt").strip()).toString();
+    }
 
     public List<PromptCharacter> extractCharacters(String source, List<PromptCharacter> existing) {
         if (model == null) {
@@ -611,6 +636,7 @@ public class TextAssistant {
             case "studio-image-prompt-v3" -> "NVIDIA devolvio un prompt final no valido; no se guardo la descripcion. Reintenta o revisa el modelo configurado.";
             case "character-chunk-v3" -> "NVIDIA devolvio personajes no validos; el chunk sigue pendiente.";
             case "character-revision-v3" -> "NVIDIA devolvio un prompt de personaje no valido; no se guardaron cambios.";
+            case "cover-prompt-v2" -> "NVIDIA devolvio un prompt de portada no valido; no se guardaron cambios.";
             default -> "NVIDIA devolvio una descripcion no valida; no se ha guardado en cache.";
         };
     }

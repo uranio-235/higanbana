@@ -18,6 +18,9 @@ CREATE TABLE IF NOT EXISTS novel (
     title VARCHAR(255),
     source TEXT
 );
+ALTER TABLE novel ADD COLUMN IF NOT EXISTS cover_prompt TEXT;
+ALTER TABLE novel ADD COLUMN IF NOT EXISTS cover_filename VARCHAR;
+ALTER TABLE novel ADD COLUMN IF NOT EXISTS cover_media_type VARCHAR;
 
 CREATE TABLE IF NOT EXISTS novel_character (
     id BIGINT PRIMARY KEY,

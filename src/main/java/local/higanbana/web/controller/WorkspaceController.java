@@ -3,6 +3,7 @@ package local.higanbana.web.controller;
 import jakarta.validation.Valid;
 import local.higanbana.application.Workflow;
 import local.higanbana.application.CharacterManager;
+import local.higanbana.application.CoverManager;
 import local.higanbana.web.dto.NovelInput;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
@@ -25,10 +26,12 @@ import static local.higanbana.web.WebRoutes.novel;
 public class WorkspaceController {
     private final Workflow workflow;
     private final CharacterManager characters;
+    private final CoverManager covers;
 
-    public WorkspaceController(Workflow workflow, CharacterManager characters) {
+    public WorkspaceController(Workflow workflow, CharacterManager characters, CoverManager covers) {
         this.workflow = workflow;
         this.characters = characters;
+        this.covers = covers;
     }
 
     @ModelAttribute public void common(Model model) {
@@ -38,6 +41,7 @@ public class WorkspaceController {
         model.addAttribute("imagePanelPromptsAvailable", workflow.imagePanelPromptsAvailable());
         model.addAttribute("imagePanelPromptProvenance", workflow.imagePanelPromptProvenance());
         model.addAttribute("characterPromptsAvailable", characters.available());
+        model.addAttribute("coverPromptsAvailable", covers.available());
     }
 
     @GetMapping("/") public String home(Model model) {
@@ -69,7 +73,7 @@ public class WorkspaceController {
 
     @GetMapping("/novels/{novelId}/{view}") public String page(@PathVariable long novelId, @PathVariable String view,
             @RequestParam(required = false) Long chunkId, Model model) {
-        if (!List.of("characters", "chunks", "panels", "studio", "generation", "reader").contains(view)) {
+        if (!List.of("characters", "cover", "chunks", "panels", "studio", "generation", "reader").contains(view)) {
             throw new IllegalArgumentException("Vista no encontrada.");
         }
         model.addAttribute("novel", workflow.novel(novelId));

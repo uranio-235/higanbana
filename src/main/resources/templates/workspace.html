@@ -24,6 +24,7 @@
     </nav>
     <nav th:if="${novel != null}" class="sidebar-tools" aria-label="Herramientas de la novela">
       <a th:href="@{/novels/{id}/characters(id=${novel.id})}" th:classappend="${view == 'characters'} ? 'active'"><span class="step"><i data-lucide="users" aria-hidden="true"></i></span> Personajes</a>
+      <a th:href="@{/novels/{id}/cover(id=${novel.id})}" th:classappend="${view == 'cover'} ? 'active'"><span class="step"><i data-lucide="image" aria-hidden="true"></i></span> Portada</a>
     </nav>
     <div class="storage-note"><i data-lucide="database" aria-hidden="true"></i><strong>Almacenamiento local</strong><p>Novelas y personajes en DuckDB. Imagenes aprobadas en disco.</p></div>
   </aside>
@@ -78,6 +79,32 @@
           <button class="secondary"><i data-lucide="sparkles" aria-hidden="true"></i> Modificar con IA</button>
         </form>
       </article>
+    </section>
+
+    <section th:if="${view == 'cover'}">
+      <div class="page-heading"><div><p class="eyebrow">HERRAMIENTA OPCIONAL</p><h1>Portada</h1></div></div>
+      <p class="notice" role="alert" th:if="${coverError}" th:text="${coverError}"></p>
+      <p class="notice" th:unless="${coverPromptsAvailable}">La generacion del prompt no esta disponible. Configura NVIDIA y el modelo de texto. Puedes editar y subir una portada igualmente.</p>
+      <form th:action="@{/novels/{id}/cover/generate(id=${novel.id})}" method="post" class="editor-form">
+        <input type="hidden" name="_csrf" th:value="${csrf}">
+        <h2>Crear prompt desde la novela</h2>
+        <p>Selecciona los chunks que quieres usar como referencia para la portada.</p>
+        <p th:if="${#lists.isEmpty(chunks)}">Confirma primero los chunks de la novela.</p>
+        <fieldset th:unless="${#lists.isEmpty(chunks)}"><legend>Chunks de referencia</legend>
+          <label class="selection-row" th:each="chunk : ${chunks}"><input type="checkbox" name="chunkIds" th:value="${chunk.id}" th:disabled="${!coverPromptsAvailable}"><span th:text="'Chunk ' + ${chunk.position}"></span></label>
+        </fieldset>
+        <button th:disabled="${#lists.isEmpty(chunks) or !coverPromptsAvailable}"><i data-lucide="sparkles" aria-hidden="true"></i> Generar prompt</button>
+      </form>
+      <div class="section-heading"><h2>Imagen de portada</h2></div>
+      <div class="reader" th:if="${novel.coverFilename != null}"><figure><img th:src="@{/novels/{id}/cover/image(id=${novel.id})}" th:alt="'Portada de ' + ${novel.title}"><figcaption><span>Portada actual</span></figcaption></figure></div>
+      <form th:action="@{/novels/{id}/cover/upload(id=${novel.id})}" method="post" enctype="multipart/form-data" hx-boost="false" class="editor-form" data-image-upload>
+        <input type="hidden" name="_csrf" th:value="${csrf}">
+        <p>Copia el prompt, genera la imagen con la IA que prefieras y sube el resultado. Comprueba que el titulo sea correcto y legible: el generador de imagenes puede escribirlo mal. Una nueva imagen reemplaza la portada actual.</p>
+        <label for="cover-prompt">Prompt de portada</label><textarea id="cover-prompt" name="prompt" rows="8" maxlength="4000" required th:text="${novel.coverPrompt}"></textarea>
+        <div class="action-bar"><button type="submit" class="secondary" formnovalidate th:formaction="@{/novels/{id}/cover/save(id=${novel.id})}"><i data-lucide="save" aria-hidden="true"></i> Guardar prompt</button><button type="button" class="secondary" data-copy-prompt><i data-lucide="copy" aria-hidden="true"></i> Copiar prompt</button><span data-copy-status role="status"></span></div>
+        <label for="cover-image">Imagen generada (PNG o JPEG, maximo 20 MB)</label><input id="cover-image" type="file" name="image" accept="image/png,image/jpeg" required>
+        <button><i data-lucide="upload" aria-hidden="true"></i> Guardar portada</button>
+      </form>
     </section>
 
     <section th:if="${view == 'chunks'}">
@@ -159,9 +186,9 @@
     </section>
 
     <section th:if="${view == 'reader'}">
-      <div class="page-heading"><div><p class="eyebrow">06 / MANGA APROBADO</p><h1 th:text="${novel.title}"></h1></div><div class="heading-actions"><span class="tag" th:text="${#lists.size(entries)} + ' imagenes'"></span> <a class="button secondary" th:if="${!#lists.isEmpty(entries)}" th:href="@{/novels/{id}/reader.pdf(id=${novel.id})}" hx-boost="false">Descargar PDF <i data-lucide="download" aria-hidden="true"></i></a></div></div>
-      <p class="empty" th:if="${#lists.isEmpty(entries)}">Todavia no hay imagenes aprobadas. <a th:href="@{/novels/{id}/generation(id=${novel.id})}">Revisar candidatos</a></p>
-      <div class="reader"><figure th:each="entry,stat : ${entries}"><img th:src="@{/novels/{id}/entries/{entry}/image(id=${novel.id},entry=${entry.id})}" th:alt="${entry.caption}"><figcaption><span th:text="'Secuencia ' + ${stat.count}"></span><span th:text="${entry.provenance}"></span><a th:href="@{/novels/{id}/entries/{entry}/image(id=${novel.id},entry=${entry.id})}" th:download="${entry.filename}" title="Descargar imagen" aria-label="Descargar imagen" hx-boost="false"><i data-lucide="download" aria-hidden="true"></i></a></figcaption></figure></div>
+      <div class="page-heading"><div><p class="eyebrow">06 / MANGA APROBADO</p><h1 th:text="${novel.title}"></h1></div><div class="heading-actions"><span class="tag" th:text="${#lists.size(entries) + (novel.coverFilename != null ? 1 : 0)} + ' imagenes'"></span> <a class="button secondary" th:if="${!#lists.isEmpty(entries) or novel.coverFilename != null}" th:href="@{/novels/{id}/reader.pdf(id=${novel.id})}" hx-boost="false">Descargar PDF <i data-lucide="download" aria-hidden="true"></i></a></div></div>
+      <p class="empty" th:if="${#lists.isEmpty(entries) and novel.coverFilename == null}">Todavia no hay imagenes aprobadas. <a th:href="@{/novels/{id}/generation(id=${novel.id})}">Revisar candidatos</a></p>
+      <div class="reader"><figure th:if="${novel.coverFilename != null}"><img th:src="@{/novels/{id}/cover/image(id=${novel.id})}" th:alt="'Portada de ' + ${novel.title}"><figcaption><span>Portada</span><span>Imagen subida por el usuario</span><a th:href="@{/novels/{id}/cover/image(id=${novel.id})}" th:download="${novel.coverFilename}" title="Descargar portada" aria-label="Descargar portada" hx-boost="false"><i data-lucide="download" aria-hidden="true"></i></a></figcaption></figure><figure th:each="entry,stat : ${entries}"><img th:src="@{/novels/{id}/entries/{entry}/image(id=${novel.id},entry=${entry.id})}" th:alt="${entry.caption}"><figcaption><span th:text="'Secuencia ' + ${stat.count}"></span><span th:text="${entry.provenance}"></span><a th:href="@{/novels/{id}/entries/{entry}/image(id=${novel.id},entry=${entry.id})}" th:download="${entry.filename}" title="Descargar imagen" aria-label="Descargar imagen" hx-boost="false"><i data-lucide="download" aria-hidden="true"></i></a></figcaption></figure></div>
     </section>
     <footer class="app-footer">
       <a class="footer-brand" href="/" aria-label="Higanbana, inicio"><i data-lucide="flower-2" aria-hidden="true"></i><span>Higanbana</span></a>

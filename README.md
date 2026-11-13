@@ -60,8 +60,8 @@ certificate/proxy for PowerShell first.
    removed, its candidate becomes rejected and its file is deleted after commit.
    A candidate that would leave some of those panels without an image is refused.
    Approved images cannot be rejected.
-6. **Lector**: only approved images appear, in narrative order, with download links
-   and an on-demand PDF download (one approved image per page). Multi-panel
+6. **Lector**: the optional cover appears first, followed by approved images in
+   narrative order, with download links and an on-demand PDF download (one image per page). Multi-panel
    compositions stay intact; the exporter does not guess panel crop boundaries.
 
 **Personajes** is available in the novel sidebar independently of these six stages.
@@ -85,6 +85,17 @@ instructions to NVIDIA to revise it in a separate request. Provider errors leave
 chunk pending and existing characters unchanged. Character management
 is handled by `CharacterManager`, independently of the numbered workflow. Deleting a sheet never deletes
 existing drafts or candidates.
+
+**Portada** is another optional sidebar tool, independent of the numbered stages.
+Choose confirmed chunks to generate a cover prompt with the configured text model,
+then edit or copy it and use an image generator of your choice. New prompts
+explicitly request the exact novel title as visible cover lettering; check the
+generated image because image models may misspell or omit text. Previously saved
+prompts and covers remain unchanged until regenerated or replaced. Upload a PNG or
+JPEG (up to 20 MB); uploading a new image replaces the current cover. The cover
+is stored locally and appears first in the reader and PDF, including when no
+panel images have been approved. Provider errors do not replace the saved prompt
+or cover; the prompt can also be edited without a text provider.
 
 Both panel-prompt generation and final studio-prompt generation expose the
 read-only `lookup_characters` tool. The initial request includes the novel's

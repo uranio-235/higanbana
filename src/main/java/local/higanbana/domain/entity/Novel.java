@@ -12,6 +12,9 @@ import java.util.List;
 public class Novel extends Row {
     public String title;
     @Column(columnDefinition = "text") public String source;
+    @Column(columnDefinition = "text") public String coverPrompt;
+    public String coverFilename;
+    public String coverMediaType;
     @OneToMany(mappedBy = "novel", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("id ASC")
     public List<NovelCharacter> characters = new ArrayList<>();

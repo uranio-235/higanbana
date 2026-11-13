@@ -5,10 +5,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import javax.imageio.ImageIO;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -24,6 +21,7 @@ import local.higanbana.domain.ai.PromptCharacter;
 import local.higanbana.domain.ai.StudioPromptRequestBuilder;
 import local.higanbana.infrastructure.image.ImageProvider;
 import local.higanbana.infrastructure.image.ImageResultBuilder;
+import local.higanbana.infrastructure.image.UploadedImage;
 import local.higanbana.domain.ReviewState;
 import local.higanbana.domain.entity.*;
 import local.higanbana.domain.image.ApprovedImageStorage;
@@ -320,43 +318,19 @@ public class Workflow {
         validText(draft.prompt, 41000, "Descripcion guardada");
         String imagePrompt = text.imagePrompt(draft.prompt, draft.characterContext);
         validText(imagePrompt, 45000, "Descripcion y fichas de personajes");
-        if (bytes == null || bytes.length == 0 || bytes.length > 20_000_000) {
-            fail("La imagen debe tener un maximo de 20 MB.");
-        }
-        try (var input = ImageIO.createImageInputStream(new ByteArrayInputStream(bytes))) {
-            var readers = ImageIO.getImageReaders(input);
-            if (!readers.hasNext()) { throw new IllegalArgumentException("Solo se admiten imagenes PNG o JPEG validas."); }
-            var reader = readers.next();
-            try {
-                reader.setInput(input, true, true);
-                String format = reader.getFormatName().toLowerCase(java.util.Locale.ROOT);
-                if (!List.of("png", "jpeg", "jpg").contains(format)
-                        || (long) reader.getWidth(0) * reader.getHeight(0) > 40_000_000) {
-                    throw new IllegalArgumentException("La imagen debe ser PNG o JPEG y no superar 40 megapixeles.");
-                }
-                var decoded = reader.read(0);
-                var output = new ByteArrayOutputStream();
-                if (decoded == null || !ImageIO.write(decoded, format, output) || output.size() > 50_000_000) {
-                    throw new IllegalArgumentException("No se pudo procesar la imagen o supera el limite de almacenamiento de 50 MB.");
-                }
-                Candidate candidate = new Candidate();
-                candidate.novelId = novelId;
-                candidate.draftId = draftId;
-                candidate.firstPanelId = draft.firstPanelId;
-                candidate.secondPanelId = draft.secondPanelId;
-                candidate.narrativeOrder = draft.narrativeOrder;
-                candidate.prompt = imagePrompt;
-                candidate.image = output.toByteArray();
-                candidate.mediaType = format.equals("png") ? "image/png" : "image/jpeg";
-                candidate.provenance = "Imagen subida por el usuario";
-                repository.saveCandidate(candidate);
-                return candidate;
-            } finally {
-                reader.dispose();
-            }
-        } catch (IOException exception) {
-            throw new IllegalArgumentException("La imagen no es valida o esta incompleta.", exception);
-        }
+        var image = UploadedImage.decode(bytes);
+        Candidate candidate = new Candidate();
+        candidate.novelId = novelId;
+        candidate.draftId = draftId;
+        candidate.firstPanelId = draft.firstPanelId;
+        candidate.secondPanelId = draft.secondPanelId;
+        candidate.narrativeOrder = draft.narrativeOrder;
+        candidate.prompt = imagePrompt;
+        candidate.image = image.bytes();
+        candidate.mediaType = image.mediaType();
+        candidate.provenance = image.provenance();
+        repository.saveCandidate(candidate);
+        return candidate;
     }
 
     public List<Candidate> candidates(long novelId) {
