@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.util.List;
 import local.higanbana.domain.entity.MangaEntry;
 import local.higanbana.domain.export.MangaPdfGenerator;
+import local.higanbana.domain.export.PanelImageBuilder;
 import local.higanbana.domain.image.ApprovedImageStorage;
 import local.higanbana.domain.workflow.WorkflowRepository;
 import org.springframework.stereotype.Service;
@@ -36,7 +37,8 @@ public class MangaPdfExportService {
         List<MangaPdfGenerator.PanelImage> panels = entries.stream()
                 .map(entry -> {
                     try {
-                        return new MangaPdfGenerator.PanelImage(imageStorage.read(entry.filename), entry.mediaType);
+                        return new PanelImageBuilder().bytes(imageStorage.read(entry.filename))
+                            .mediaType(entry.mediaType).build();
                     } catch (IOException exception) {
                         throw new IllegalStateException("No se encuentra una imagen aprobada necesaria para el PDF.", exception);
                     }

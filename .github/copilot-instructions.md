@@ -1,5 +1,22 @@
 # Project Policies
 
+This is a project to learn Spring Boot and Java. The user comes from C# dotnet. 
+
+## Educational Approach
+
+- Treat coding tasks as opportunities to teach, not just deliver changes. Briefly
+  explain the key decision and why it fits this project; keep routine or obvious
+  details concise.
+- When a Java or Spring concept differs meaningfully from C#/.NET, make the
+  connection explicit and explain the practical difference. Do not force a
+  comparison when it adds no clarity.
+- For unfamiliar concepts, use a small example from the code being worked on,
+  then point out the relevant tradeoff or common pitfall.
+- During debugging, explain the evidence behind the diagnosis and how the check
+  distinguishes between likely causes.
+- Keep teaching proportional to the task. Make the change and verify it; do not
+  turn routine work into a lecture or delay progress with background material.
+
 ## Layout
 
 - Target desktop browsers. Mobile-specific layouts, responsive adaptations, and
@@ -22,6 +39,9 @@
 
 ## Java Structure
 
+- Use `StringBuilder` with chained `append` calls to assemble long strings,
+  such as AI prompts, instead of long `+` concatenation chains. Preserve the
+  exact text and whitespace, and call `toString()` when passing the result.
 - Keep Java package names aligned with source directories and give each top-level
   type its own file.
 - Keep JPA entities, domain rules, and application-facing interfaces/ports in
@@ -58,3 +78,5 @@
 
 - Run focused tests for changed behavior. Stop any process using the packaged JAR
   before rebuilding that JAR on Windows.
+- On Windows, run Maven commands from the repository root with `mvnw.cmd`; do not
+  assume `mvn` is installed or available on `PATH`.

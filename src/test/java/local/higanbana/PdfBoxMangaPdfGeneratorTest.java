@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import javax.imageio.ImageIO;
 import local.higanbana.domain.export.MangaPdfGenerator.PanelImage;
+import local.higanbana.domain.export.PanelImageBuilder;
 import local.higanbana.infrastructure.pdf.PdfBoxMangaPdfGenerator;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -27,9 +28,13 @@ class PdfBoxMangaPdfGeneratorTest {
                 </svg>
                 """.getBytes(StandardCharsets.UTF_8);
 
-        byte[] bytes = generator.generate(List.of(
-                new PanelImage(pngOutput.toByteArray(), "image/png"),
-                new PanelImage(svg, "image/svg+xml")));
+        PanelImage pngPanel = new PanelImageBuilder().bytes(pngOutput.toByteArray()).mediaType("image/png").build();
+        PanelImage svgPanel = new PanelImageBuilder().bytes(svg).mediaType("image/svg+xml").build();
+        PanelImage changedPanel = pngPanel.withMediaType("image/jpeg");
+        assertThat(changedPanel.mediaType()).isEqualTo("image/jpeg");
+        assertThat(changedPanel.bytes()).isSameAs(pngPanel.bytes());
+
+        byte[] bytes = generator.generate(List.of(pngPanel, svgPanel));
 
         try (PDDocument document = Loader.loadPDF(bytes)) {
             assertThat(document.getNumberOfPages()).isEqualTo(2);
@@ -44,7 +49,8 @@ class PdfBoxMangaPdfGeneratorTest {
     @Test
     void rejectsUnsupportedImageTypes() {
         assertThatIllegalArgumentException().isThrownBy(() ->
-                generator.generate(List.of(new PanelImage(new byte[]{1}, "image/gif"))))
+            generator.generate(List.of(new PanelImageBuilder().bytes(new byte[]{1})
+                .mediaType("image/gif").build())))
                 .withMessageContaining("Formato de imagen");
     }
 }

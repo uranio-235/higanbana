@@ -68,13 +68,16 @@ class WebFlowTest {
         }
 
     @BeforeEach void session() throws Exception {
-        doAnswer(invocation -> Chunking.split(invocation.getArgument(0), invocation.getArgument(1)))
-                .when(text).chunks(anyString(), anyInt(), anyString());
-        doAnswer(invocation -> java.util.stream.IntStream.rangeClosed(1, invocation.getArgument(1))
+        doAnswer(invocation -> {
+            local.higanbana.domain.ai.ChunkRequest request = invocation.getArgument(0);
+            return Chunking.split(request.source(), request.limit());
+        }).when(text).chunks(any());
+        doAnswer(invocation -> java.util.stream.IntStream.rangeClosed(1,
+                invocation.getArgument(0, local.higanbana.domain.ai.PanelPromptRequest.class).count())
                 .mapToObj(index -> "Prompt visual de prueba " + index + ": accion, personaje y encuadre.").toList())
-                .when(text).imagePanelPrompts(anyString(), anyInt(), anyString());
-        doReturn(new local.higanbana.domain.ai.CachedText("Propuesta de prueba.", "test-key"))
-                .when(text).studioPrompt(anyString());
+                .when(text).imagePanelPrompts(any());
+        doReturn(new local.higanbana.domain.ai.CachedTextBuilder().text("Propuesta de prueba.").cacheKey("test-key").build())
+                .when(text).studioPrompt(any());
         session = (MockHttpSession) mvc.perform(get("/")).andExpect(status().isOk())
                 .andExpect(content().string(containsString("Nueva obra"))).andReturn().getRequest().getSession();
     }
@@ -157,7 +160,9 @@ class WebFlowTest {
                 mvc.perform(form(base + "/studio").param("panelIds", panels.stream().map(panel -> panel.id.toString()).toArray(String[]::new)))
                                 .andExpect(status().is3xxRedirection());
                 var draft = workflow.drafts(novel.id).getFirst();
-                assertThat(draft.prompt).contains("exactamente 3 viñetas", "Viñeta 3:", chunk.content);
+                assertThat(draft.prompt).isEqualTo("Propuesta de prueba.");
+                org.mockito.Mockito.verify(text).studioPrompt(argThat(request -> request.source().equals(chunk.content)
+                        && request.panelPrompts().equals(panels.stream().map(panel -> panel.imagePrompt).toList())));
         }
 
         @Test void modelsHaveIndependentFileConfiguration() {
@@ -177,7 +182,7 @@ class WebFlowTest {
         var panels = workflow.panels(novel.id);
         var character = workflow.addCharacter(novel.id, "Yuna", "Uniforme escolar.");
         doThrow(new local.higanbana.domain.ai.TextProviderException("NVIDIA esta temporalmente sobrecargado."))
-                .when(text).studioPrompt(anyString());
+                .when(text).studioPrompt(any());
         String base = "/novels/" + novel.id;
         var result = mvc.perform(form(base + "/studio")
                         .param("panelIds", panels.getFirst().id.toString(), panels.get(1).id.toString())

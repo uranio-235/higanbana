@@ -140,6 +140,29 @@ Output structures/counts are validated before persistence. Source
 text is untrusted narrative content, not system instructions. This is not a
 guarantee against model prompt injection; inspect proposals before confirming.
 
+### Manga prompts and lettering
+
+`TextAssistant` owns all prompt instructions, context formatting, references, and
+final image-prompt assembly. `Workflow` validates selections and passes structured
+data using `ChunkRequest`, `PanelPromptRequest`, and `StudioPromptRequest` records,
+created with their Immutables-generated builders. It persists the returned prompt
+unchanged; character snapshots are also formatted by the assistant.
+
+Generated panel and studio prompts start with application-owned manga drawing and
+lettering instructions, even if the text model returns only scene descriptions.
+They require monochrome ink and halftones, readable black text in white speech
+bubbles with tails toward the speaker, and separate tailless narrator captions.
+The text assistant is asked to quote each literal line with its speaker and panel,
+or mark a silent panel explicitly. Original-scene references are context, not text
+to print wholesale. The instructions count toward the existing 1,500-character
+panel and 10,000-character generated studio prompt limits; oversized responses are
+rejected rather than truncated.
+
+Existing saved prompts and images are not rewritten. Regenerate panel prompts and
+create a new studio draft to apply the updated instructions. User edits remain
+authoritative. Images are generated externally and uploaded for review; prompt
+contract tests do not guarantee that an external model renders lettering correctly.
+
 Successful NVIDIA text responses are cached in DuckDB for 30 days by default.
 `app.ai.cache.ttl` configures the retention period. The SHA-256 key covers the
 operation, provider endpoint, model, prompt version, generation parameters, and

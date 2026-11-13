@@ -18,6 +18,10 @@ import local.higanbana.domain.entity.*;
 import local.higanbana.domain.Chunking;
 import local.higanbana.application.Workflow;
 import local.higanbana.infrastructure.ai.TextAssistant;
+import local.higanbana.domain.ai.ChunkRequest;
+import local.higanbana.domain.ai.PanelPromptRequest;
+import local.higanbana.domain.ai.PanelPromptRequestBuilder;
+import local.higanbana.domain.ai.CachedTextBuilder;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -36,20 +40,22 @@ class WorkflowTest {
     @Autowired jakarta.persistence.EntityManager em;
 
     @BeforeEach void stubChunkProviderOnlyInTests() {
-        doAnswer(invocation -> Chunking.split(invocation.getArgument(0), invocation.getArgument(1)))
-                .when(text).chunks(anyString(), anyInt(), anyString());
-        doAnswer(invocation -> java.util.stream.IntStream.rangeClosed(1, invocation.getArgument(1))
+        doAnswer(invocation -> {
+            ChunkRequest request = invocation.getArgument(0);
+            return Chunking.split(request.source(), request.limit());
+        }).when(text).chunks(any(ChunkRequest.class));
+        doAnswer(invocation -> java.util.stream.IntStream.rangeClosed(1, invocation.getArgument(0, PanelPromptRequest.class).count())
             .mapToObj(index -> "Prompt visual de prueba " + index + ": mantener la escena y su encuadre.").toList())
-            .when(text).imagePanelPrompts(anyString(), anyInt(), anyString());
-        doReturn(new local.higanbana.domain.ai.CachedText("Propuesta de prueba.", "test-key"))
-            .when(text).studioPrompt(anyString());
+            .when(text).imagePanelPrompts(any(PanelPromptRequest.class));
+        doReturn(new CachedTextBuilder().text("Propuesta de prueba.").cacheKey("test-key").build())
+            .when(text).studioPrompt(any());
     }
 
     @Test void failedNarrativeRevisionKeepsThePreviousProposal() {
         Novel novel = workflow.createNovel("Escenas", "Primera escena. Segunda escena.");
         var plan = workflow.proposeChunks(novel.id, "Cambios de lugar");
         var previous = List.copyOf(plan.segments);
-        doThrow(new IllegalArgumentException("Proveedor no disponible")).when(text).chunks(anyString(), anyInt(), anyString());
+        doThrow(new IllegalArgumentException("Proveedor no disponible")).when(text).chunks(any(ChunkRequest.class));
         assertThatIllegalArgumentException().isThrownBy(() -> workflow.proposeChunks(novel.id, "Revisar"));
         assertThat(workflow.chunkPlan(novel.id).segments).containsExactlyElementsOf(previous);
     }
@@ -57,7 +63,7 @@ class WorkflowTest {
     @Test void failedStudioGenerationDoesNotCreateADescription() {
         Novel novel = prepared();
         Long panelId = workflow.panels(novel.id).getFirst().id;
-        doThrow(new IllegalArgumentException("NVIDIA no disponible")).when(text).studioPrompt(anyString());
+        doThrow(new IllegalArgumentException("NVIDIA no disponible")).when(text).studioPrompt(any());
         assertThatIllegalArgumentException().isThrownBy(() -> workflow.createDraft(novel.id, List.of(panelId), ""))
                 .withMessageContaining("NVIDIA no disponible");
         assertThat(workflow.drafts(novel.id)).isEmpty();
@@ -106,7 +112,9 @@ class WorkflowTest {
         workflow.addCharacter(novel.id, "Rin", "Sombrero verde.");
         Long panelId = workflow.panels(novel.id).getFirst().id;
         StudioDraft draft = workflow.createDraft(novel.id, List.of(panelId), "", List.of(selected.id));
-        assertThat(draft.prompt).contains("Prompt visual de prueba 1");
+        assertThat(draft.prompt).isEqualTo("Propuesta de prueba.");
+        verify(text).studioPrompt(argThat(request -> request.panelPrompts().getFirst().contains("Prompt visual de prueba 1")
+                && request.characters().size() == 1 && request.characters().getFirst().name().equals("Aiko")));
         assertThat(draft.characterContext).contains("Aiko", "Ojos grises y abrigo rojo.").doesNotContain("Sombrero verde");
         workflow.saveDraft(novel.id, draft.id, "Primer plano al amanecer.");
         workflow.updateCharacter(novel.id, selected.id, "Aiko", "Ahora lleva abrigo azul.");
@@ -123,7 +131,8 @@ class WorkflowTest {
         workflow.confirmChunks(novel.id);
         Chunk chunk = workflow.chunks(novel.id).getFirst();
         String generated = "Aiko abre una puerta de madera bajo la lluvia, plano medio, faro al fondo.";
-        doReturn(List.of(generated)).when(text).imagePanelPrompts(chunk.content, 1, "Plano medio");
+        doReturn(List.of(generated)).when(text).imagePanelPrompts(new PanelPromptRequestBuilder()
+                .source(chunk.content).count(1).direction("Plano medio").build());
         workflow.proposePanels(novel.id, chunk.id, 1, "Plano medio");
         PanelPlan plan = workflow.panelPlan(novel.id, chunk.id);
         assertThat(plan.imagePrompts).containsExactly(generated);
@@ -131,12 +140,16 @@ class WorkflowTest {
         Panel panel = workflow.panels(novel.id).getFirst();
         assertThat(panel.imagePrompt).isEqualTo(generated);
 
+        String lettering = "Viñeta 1: Aiko -> globo: \"Espera, Rin\". "
+            + "Narrador -> cartela: \"La lluvia golpea la puerta del faro.\"";
+        doReturn(new CachedTextBuilder().text(lettering).cacheKey("test-key").build())
+            .when(text).studioPrompt(any());
         StudioDraft draft = workflow.createDraft(novel.id, List.of(panel.id), "Luz fria");
-        assertThat(draft.prompt).contains(generated, "Luz fria", "manga japones en blanco y negro", "tramas de semitonos",
-            "globos con los dialogos literales", "cartelas rectangulares con fragmentos descriptivos breves y literales",
-            "Espera, Rin", "La lluvia golpea la puerta del faro.", "tonos de gris", "exactamente 1 viñeta");
+        assertThat(draft.prompt).isEqualTo(lettering);
+        verify(text).studioPrompt(argThat(request -> request.source().equals(chunk.content)
+                && request.panelPrompts().equals(List.of(generated)) && request.direction().equals("Luz fria")));
         Candidate candidate = workflow.uploadImage(novel.id, draft.id, imageBytes());
-        assertThat(candidate.prompt).contains(generated, "Luz fria");
+        assertThat(candidate.prompt).isEqualTo(draft.prompt).contains(lettering);
     }
 
     @Test void uploadedImageCreatesAReviewCandidateAndRejectsInvalidFiles() throws Exception {
@@ -249,7 +262,10 @@ class WorkflowTest {
         assertThat(draft.firstPanelId).isEqualTo(panels.getFirst().id);
         assertThat(draft.secondPanelId).isEqualTo(panels.get(1).id);
         assertThat(draft.panelIds).containsExactly(panels.getFirst().id, panels.get(1).id, panels.get(2).id);
-        assertThat(draft.prompt).contains("manga japones en blanco y negro", "exactamente 3 viñetas", "Viñeta 1:", "Viñeta 2:", "Viñeta 3:", workflow.chunks(first.id).getFirst().content);
+        assertThat(draft.prompt).isEqualTo("Propuesta de prueba.");
+        verify(text).studioPrompt(argThat(request -> request.panelPrompts().equals(
+                panels.stream().map(panel -> panel.imagePrompt).toList())
+                && request.source().equals(workflow.chunks(first.id).getFirst().content)));
         Candidate candidate = workflow.uploadImage(first.id, draft.id, imageBytes());
         em.flush();
         em.clear();

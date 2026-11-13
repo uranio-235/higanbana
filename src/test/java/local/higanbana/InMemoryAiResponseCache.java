@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import org.immutables.value.Value;
 
 final class InMemoryAiResponseCache implements AiResponseCache {
     private final Map<String, Entry> entries = new ConcurrentHashMap<>();
@@ -23,12 +24,17 @@ final class InMemoryAiResponseCache implements AiResponseCache {
     }
 
     @Override
-    public void store(String key, String operation, String provider, String model, String promptVersion,
-                      String response, Duration ttl) {
+    public void store(String key, String operation, String provider, String model, String promptVersion, String response, Duration ttl) {
         if (!ttl.isNegative() && !ttl.isZero()) {
-            entries.put(key, new Entry(response, Instant.now().plus(ttl)));
+            entries.put(
+                key, 
+                new EntryBuilder()
+                    .response(response)
+                    .expiresAt(Instant.now().plus(ttl))
+                    .build());
         }
     }
 
-    private record Entry(String response, Instant expiresAt) {}
+    @Value.Builder
+    record Entry(String response, Instant expiresAt) implements WithEntry {}
 }

@@ -44,8 +44,8 @@ class DuckDbPersistenceTest {
 
     @org.junit.jupiter.api.BeforeEach
     void stubStudioPrompt() {
-        doReturn(new local.higanbana.domain.ai.CachedText("Propuesta de prueba.", "test-key"))
-                .when(text).studioPrompt(org.mockito.ArgumentMatchers.anyString());
+        doReturn(new local.higanbana.domain.ai.CachedTextBuilder().text("Propuesta de prueba.").cacheKey("test-key").build())
+                .when(text).studioPrompt(org.mockito.ArgumentMatchers.any());
     }
 
     @Test
@@ -83,7 +83,7 @@ class DuckDbPersistenceTest {
         var second = workflow.uploadImage(novel.id, draft.id, output.toByteArray());
         em.flush();
         em.clear();
-        assertThat(workflow.candidate(novel.id, first.id).prompt).contains("manga japones en blanco y negro", "Aiko entra al faro.");
+        assertThat(workflow.candidate(novel.id, first.id).prompt).isEqualTo(draft.prompt);
         assertThat(workflow.candidate(novel.id, second.id).prompt).isEqualTo("Una vista nueva del faro.");
         assertThat(workflow.candidateImage(novel.id, second.id).mediaType()).isEqualTo("image/png");
     }
@@ -144,7 +144,7 @@ class DuckDbPersistenceTest {
             .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess(secondResponse, org.springframework.http.MediaType.APPLICATION_JSON));
         var realAssistant = new TextAssistant("nvidia", "https://provider.test", "test-key", "test-model", mapper, builder, cache, Duration.ofDays(1));
         org.mockito.Mockito.doAnswer(invocation -> realAssistant.studioPrompt(invocation.getArgument(0)))
-            .when(text).studioPrompt(org.mockito.ArgumentMatchers.anyString());
+            .when(text).studioPrompt(org.mockito.ArgumentMatchers.any());
 
         Novel novel = workflow.createNovel("Regenerar", "Una ventana bajo la lluvia.");
         Chunk chunk = new Chunk();
@@ -162,7 +162,7 @@ class DuckDbPersistenceTest {
 
         var first = workflow.createDraft(novel.id, java.util.List.of(panel.id), "");
         var same = workflow.createDraft(novel.id, java.util.List.of(panel.id), "");
-        assertThat(first.prompt).startsWith("Primera propuesta.");
+        assertThat(first.prompt).startsWith("Crea una imagen de manga japones en blanco y negro").contains("Primera propuesta.");
         assertThat(same.prompt).isEqualTo(first.prompt);
         assertThat(same.aiCacheKey).isEqualTo(first.aiCacheKey);
         em.flush();
@@ -170,7 +170,7 @@ class DuckDbPersistenceTest {
         workflow.deleteDraft(novel.id, first.id);
         em.flush();
         var refreshed = workflow.createDraft(novel.id, java.util.List.of(panel.id), "");
-        assertThat(refreshed.prompt).startsWith("Segunda propuesta.");
+        assertThat(refreshed.prompt).startsWith("Crea una imagen de manga japones en blanco y negro").contains("Segunda propuesta.");
         assertThat(workflow.drafts(novel.id)).hasSize(2);
         server.verify();
         }
@@ -356,7 +356,8 @@ class DuckDbPersistenceTest {
         assertThat(workflow.panelPlan(novel.id, chunk.id).imagePrompts).containsExactly("Prompt editado.");
 
         doReturn(java.util.List.of("Prompt regenerado uno.", "Prompt regenerado dos."))
-                .when(text).imagePanelPrompts(chunk.content, 2, "Separar acciones");
+                .when(text).imagePanelPrompts(new local.higanbana.domain.ai.PanelPromptRequestBuilder()
+                        .source(chunk.content).count(2).direction("Separar acciones").build());
         workflow.proposePanels(novel.id, chunk.id, 2, "Separar acciones");
         em.flush();
         em.clear();
@@ -397,7 +398,8 @@ class DuckDbPersistenceTest {
         Long panelId = workflow.panels(novel.id).getFirst().id;
 
         doReturn(java.util.List.of("Prompt NVIDIA nuevo.")).when(text)
-                .imagePanelPrompts(chunk.content, 1, "Actualizar");
+                .imagePanelPrompts(new local.higanbana.domain.ai.PanelPromptRequestBuilder()
+                        .source(chunk.content).count(1).direction("Actualizar").build());
         workflow.proposePanels(novel.id, chunk.id, 1, "Actualizar");
         em.flush();
         em.clear();

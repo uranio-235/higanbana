@@ -1,5 +1,8 @@
 package local.higanbana.infrastructure.image;
 
+import org.immutables.value.Value;
+
 public interface ImageProvider {
-    record ImageResult(byte[] bytes, String mediaType, String provenance) {}
+    @Value.Builder
+    record ImageResult(byte[] bytes, String mediaType, String provenance) implements WithImageResult {}
 }

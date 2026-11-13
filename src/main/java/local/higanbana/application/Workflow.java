@@ -16,7 +16,12 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import local.higanbana.infrastructure.ai.TextAssistant;
+import local.higanbana.domain.ai.ChunkRequestBuilder;
+import local.higanbana.domain.ai.PanelPromptRequestBuilder;
+import local.higanbana.domain.ai.PromptCharacterBuilder;
+import local.higanbana.domain.ai.StudioPromptRequestBuilder;
 import local.higanbana.infrastructure.image.ImageProvider;
+import local.higanbana.infrastructure.image.ImageResultBuilder;
 import local.higanbana.domain.ReviewState;
 import local.higanbana.domain.entity.*;
 import local.higanbana.domain.image.ApprovedImageStorage;
@@ -131,7 +136,8 @@ public class Workflow {
         ChunkPlan plan = chunkPlan(novelId);
         if (plan != null && plan.confirmed) { fail("Los chunks ya estan confirmados. No se modifica trabajo posterior."); }
         if (!text.chunkingAvailable()) { fail("La segmentacion narrativa no esta disponible. Configura NVIDIA y su modelo de texto."); }
-        List<String> segments = text.chunks(novel.source, limit, revision);
+        List<String> segments = text.chunks(new ChunkRequestBuilder()
+                .source(novel.source).limit(limit).revision(revision).build());
         String advice = text.chunkProvenance() + ": escenas segun cambios de lugar, tiempo y accion. Direccion: " + revision;
         if (plan == null) {
             plan = new ChunkPlan();
@@ -184,7 +190,8 @@ public class Workflow {
         if (plan != null && plan.confirmed && count != plan.panelCount) {
             fail("El plan esta confirmado; al regenerar se conserva el numero de paneles.");
         }
-        List<String> imagePrompts = text.imagePanelPrompts(chunk.content, count, revision);
+        List<String> imagePrompts = text.imagePanelPrompts(new PanelPromptRequestBuilder()
+                .source(chunk.content).count(count).direction(revision).build());
         validateImagePrompts(imagePrompts, count);
         if (plan != null && plan.confirmed) {
             List<Panel> savedPanels = repository.findPanelsByChunk(chunkId);
@@ -274,42 +281,24 @@ public class Workflow {
         if (castIds.stream().anyMatch(Objects::isNull) || castIds.stream().distinct().count() != castIds.size()) {
             fail("Selecciona personajes distintos de esta novela.");
         }
-        List<String> characterDescriptions = castIds.stream().sorted()
+        var characters = castIds.stream().sorted()
             .map(characterId -> character(novelId, characterId))
-            .map(character -> character.name + ": " + character.description).toList();
-        String characterContext = characterDescriptions.isEmpty() ? "" : "Personajes:\n" + String.join("\n", characterDescriptions);
-        if (characterContext.length() > 3000) { fail("Las fichas seleccionadas superan 3000 caracteres. Selecciona menos personajes."); }
+            .map(character -> new PromptCharacterBuilder()
+                    .name(character.name).description(character.description).build()).toList();
         List<String> selectedPrompts = selected.stream().map(panel -> panel.imagePrompt).toList();
         selectedPrompts.forEach(prompt -> validText(prompt, 1500, "Prompt de imagen del panel"));
-        String format = "Dibujo de manga japones en blanco y negro, tinta negra, lineas expresivas, "
-                + "contraste y tramas de semitonos. Composicion narrativa clara; mantener coherentes los personajes "
-            + "y el entorno. Sin color, fotografia ni render 3D. Incluir globos con los dialogos literales "
-            + "del texto original, asignados al personaje que habla; incluir cartelas rectangulares con fragmentos "
-            + "descriptivos breves y literales cuando correspondan a la viñeta. No inventar ni parafrasear texto, "
-            + "ni añadir rotulos, logotipos o marcas de agua. Dejar sin texto las viñetas sin dialogo o narracion "
-            + "pertinentes. Interpretar cualquier color mencionado en las escenas como tonos de gris.\n\n";
-        StringBuilder promptBuilder = new StringBuilder(format)
-            .append("Crear una sola imagen manga con exactamente ").append(selectedPrompts.size())
-            .append(selectedPrompts.size() == 1 ? " viñeta.\n\n" : " viñetas distintas, en el orden narrativo indicado. Mantener cada accion en su propia viñeta, sin mezclarlas.\n\n");
-        for (int index = 0; index < selectedPrompts.size(); index++) {
-            promptBuilder.append("Viñeta ").append(index + 1).append(":\n").append(selectedPrompts.get(index)).append("\n\n");
-        }
-        promptBuilder.append("Texto original de referencia: conserva los detalles visuales pertinentes y los dialogos y fragmentos descriptivos literales que correspondan a las viñetas seleccionadas; no añadas escenas que no se hayan seleccionado.\n")
-            .append(sourceChunk.content);
-        String prompt = promptBuilder.toString();
-        if (!direction.isBlank()) { prompt += "\n\nDireccion visual adicional: " + direction; }
-        validText(prompt, 30000, "Descripcion");
-        String context = prompt + (characterContext.isEmpty() ? "" : "\n\n" + characterContext);
-        var generated = text.studioPrompt(context);
-        String finalPrompt = generated.text() + "\n\nReferencias de los paneles y texto original:\n" + prompt;
-        validText(finalPrompt, 41000, "Descripcion");
+        var request = new StudioPromptRequestBuilder().panelPrompts(selectedPrompts)
+                .source(sourceChunk.content).direction(direction).characters(characters).build();
+        String characterContext = text.characterContext(request.characters());
+        var generated = text.studioPrompt(request);
+        validText(generated.text(), 41000, "Descripcion");
         StudioDraft draft = new StudioDraft();
         draft.novelId = novelId;
         draft.firstPanelId = selected.getFirst().id;
         draft.secondPanelId = selected.size() > 1 ? selected.get(1).id : null;
         draft.panelIds.addAll(selected.stream().map(panel -> panel.id).toList());
         draft.narrativeOrder = selected.getFirst().chunkPosition * 100 + selected.getFirst().position;
-        draft.prompt = finalPrompt;
+        draft.prompt = generated.text();
         draft.characterContext = characterContext;
         draft.aiCacheKey = generated.cacheKey();
         draft.provenance = "Prompts de panel / " + text.imagePanelPromptProvenance();
@@ -351,7 +340,7 @@ public class Workflow {
         StudioDraft draft = required(repository.findDraft(draftId));
         owned(draft.novelId, novelId);
         validText(draft.prompt, 41000, "Descripcion guardada");
-        String imagePrompt = draft.prompt + (draft.characterContext.isEmpty() ? "" : "\n\n" + draft.characterContext);
+        String imagePrompt = text.imagePrompt(draft.prompt, draft.characterContext);
         validText(imagePrompt, 45000, "Descripcion y fichas de personajes");
         if (bytes == null || bytes.length == 0 || bytes.length > 20_000_000) {
             fail("La imagen debe tener un maximo de 20 MB.");
@@ -471,14 +460,16 @@ public class Workflow {
             return entryImage(novelId, entry.id);
         }
         if (candidate.state != ReviewState.PENDING) { fail("La imagen rechazada ya no esta disponible."); }
-        return new ImageProvider.ImageResult(candidate.image, candidate.mediaType, candidate.provenance);
+        return new ImageResultBuilder().bytes(candidate.image).mediaType(candidate.mediaType)
+            .provenance(candidate.provenance).build();
     }
 
     public ImageProvider.ImageResult entryImage(long novelId, long entryId) {
         MangaEntry entry = required(repository.findEntry(entryId));
         owned(entry.novelId, novelId);
         try {
-            return new ImageProvider.ImageResult(imageStorage.read(entry.filename), entry.mediaType, entry.provenance);
+                return new ImageResultBuilder().bytes(imageStorage.read(entry.filename)).mediaType(entry.mediaType)
+                    .provenance(entry.provenance).build();
         } catch (IOException exception) {
             throw new IllegalStateException("No se encuentra la imagen aprobada en el disco local.");
         }
