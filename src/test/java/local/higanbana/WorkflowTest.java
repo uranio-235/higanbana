@@ -235,7 +235,8 @@ class WorkflowTest {
         Chunk chunk = workflow.chunks(novel.id).getFirst();
         String generated = "Aiko abre una puerta de madera bajo la lluvia, plano medio, faro al fondo.";
         doReturn(List.of(generated)).when(text).imagePanelPrompts(new PanelPromptRequestBuilder()
-                .source(chunk.content).count(1).direction("Plano medio").build());
+            .source(chunk.content).count(1).direction("Plano medio")
+            .memoryScope(java.util.Optional.of("novel:" + novel.id)).build());
         workflow.proposePanels(novel.id, chunk.id, 1, "Plano medio");
         PanelPlan plan = workflow.panelPlan(novel.id, chunk.id);
         assertThat(plan.imagePrompts).containsExactly(generated);

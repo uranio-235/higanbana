@@ -9,6 +9,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.ActiveProfiles;
@@ -29,8 +30,10 @@ import local.higanbana.domain.Chunking;
 import local.higanbana.application.Workflow;
 import local.higanbana.application.CharacterManager;
 import local.higanbana.application.CoverManager;
+import local.higanbana.application.MemoryService;
 import local.higanbana.infrastructure.ai.TextAssistant;
 import local.higanbana.infrastructure.ai.JpaAiResponseCache;
+import local.higanbana.domain.memory.TextEmbedder;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {"app.nvidia.api-key=test-key", "app.text.model=meta/llama-3.1-8b-instruct", "app.image.model="})
 @AutoConfigureMockMvc
@@ -54,7 +57,32 @@ class WebFlowTest {
         @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
         @Autowired liquibase.integration.spring.SpringLiquibase migrations;
         @Autowired JpaAiResponseCache aiResponseCache;
+        @Autowired MemoryService memory;
+        @MockitoBean TextEmbedder embedder;
     MockHttpSession session;
+
+        @Test void h2MemoryRepositoryStoresReadsAndScoresMemories() {
+                String scope = "h2-memory-" + java.util.UUID.randomUUID();
+                when(embedder.embed("Memoria de Aiko.")).thenReturn(memoryVector(0));
+                when(embedder.embed("Memoria del faro.")).thenReturn(memoryVector(1));
+                when(embedder.embed("Consulta de Aiko.")).thenReturn(memoryVector(0));
+
+                memory.remember(scope, "Memoria de Aiko.");
+                memory.remember(scope, "Memoria del faro.");
+
+                var matches = memory.search(scope, "Consulta de Aiko.", 2);
+
+                assertThat(matches).extracting(local.higanbana.domain.memory.MemoryMatch::content)
+                        .containsExactly("Memoria de Aiko.", "Memoria del faro.");
+                assertThat(matches.getFirst().similarity()).isCloseTo(1.0, org.assertj.core.data.Offset.offset(0.00001));
+                assertThat(matches.get(1).similarity()).isCloseTo(0.0, org.assertj.core.data.Offset.offset(0.00001));
+        }
+
+        private float[] memoryVector(int activeDimension) {
+                float[] vector = new float[MemoryService.EMBEDDING_DIMENSIONS];
+                vector[activeDimension] = 1.0f;
+                return vector;
+        }
 
         @Test void testsUseH2WithIdempotentLiquibaseMigrationsAndHibernateValidation() throws Exception {
                 try (var connection = dataSource.getConnection()) {

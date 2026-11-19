@@ -6,3 +6,6 @@
 /application-local.properties
 /higanbana.duckdb
 /higanbana.duckdb.wal
+/memory-model/*.onnx
+/memory-model/tokenizer.json
+/memory-model/*.download

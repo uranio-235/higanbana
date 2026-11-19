@@ -26,6 +26,7 @@ import local.higanbana.domain.ai.PanelPromptRequest;
 import local.higanbana.domain.ai.PromptCharacter;
 import local.higanbana.domain.ai.StudioPromptRequest;
 import local.higanbana.domain.ai.TextProviderException;
+import local.higanbana.application.MemoryService;
 
 import java.io.IOException;
 import java.security.MessageDigest;
@@ -81,6 +82,7 @@ public class TextAssistant {
     private final OpenAiChatModel model;
     private final ObjectMapper mapper;
     private final AiResponseCache cache;
+    private final MemoryService memories;
     private final Duration cacheTtl;
     private final Object[] cacheLocks = new Object[64];
         private final java.util.concurrent.atomic.AtomicInteger studioSeed = new java.util.concurrent.atomic.AtomicInteger(
@@ -91,13 +93,14 @@ public class TextAssistant {
                          @Value("${app.nvidia.api-key:}") String key,
                          @Value("${app.text.model}") String modelName,
                          ObjectMapper mapper, RestClient.Builder restClientBuilder,
-                         AiResponseCache cache,
+                         AiResponseCache cache, MemoryService memories,
                          @Value("${app.ai.cache.ttl:30d}") Duration cacheTtl) {
         this.mode = mode;
         this.baseUrl = baseUrl;
         this.modelName = modelName;
         this.mapper = mapper;
         this.cache = cache;
+        this.memories = memories;
         this.cacheTtl = cacheTtl;
         if (cacheTtl.isZero() || cacheTtl.isNegative()) {
             throw new IllegalArgumentException("app.ai.cache.ttl debe ser mayor que cero.");
@@ -390,7 +393,7 @@ public class TextAssistant {
         String response = callCached(new TextRequestBuilder()
                 .task(prompt.toString()).context(request.source()).revision(request.direction())
                 .operation("image-panel-prompts-v3").validator(value -> validPanels(value, request.count()))
-                .characters(request.characters())
+                .characters(request.characters()).memoryScope(request.memoryScope())
                 .contextLimit(8000).build()).text();
         try {
                 return Optional.ofNullable(mapper.readTree(response))
@@ -428,7 +431,7 @@ public class TextAssistant {
                 .append(STUDIO_DESCRIPTION_LIMIT).append(" caracteres.");
         CachedText response = callCached(new TextRequestBuilder()
                 .task(task.toString()).context(context).revision("").operation("studio-image-prompt-v3")
-                .characters(request.availableCharacters())
+                .characters(request.availableCharacters()).memoryScope(request.memoryScope())
                 .validator(this::validStudioPrompt).contextLimit(34000).build());
         try {
             String prompt = Optional.ofNullable(mapper.readTree(response.text()))
@@ -557,8 +560,10 @@ public class TextAssistant {
 
                 var promptBuilder = Prompt.builder().content(requestContent);
                 var options = OpenAiChatOptions.builder();
-                CharacterLookup lookup = new CharacterLookup(request.characters(), mapper);
+                CharacterLookup lookup = new CharacterLookup(request.characters(),
+                    request.memoryScope().orElse(""), memories, mapper);
                 if (!request.characters().isEmpty()) {
+                    lookup.seed();
                     options.toolCallbacks(lookup).internalToolExecutionEnabled(false).parallelToolCalls(false);
                 }
                 if (request.operation().equals("studio-image-prompt-v3")

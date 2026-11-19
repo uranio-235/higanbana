@@ -160,7 +160,8 @@ public class Workflow {
             fail("El plan esta confirmado; al regenerar se conserva el numero de paneles.");
         }
         List<String> imagePrompts = text.imagePanelPrompts(new PanelPromptRequestBuilder()
-                .source(chunk.content).count(count).direction(revision).characters(promptCharacters(novelId)).build());
+                .source(chunk.content).count(count).direction(revision).memoryScope(Optional.of("novel:" + novelId))
+            .characters(promptCharacters(novelId)).build());
         validateImagePrompts(imagePrompts, count);
         if (plan != null && plan.confirmed) {
             List<Panel> savedPanels = repository.findPanelsByChunk(chunkId);
@@ -257,7 +258,7 @@ public class Workflow {
         List<String> selectedPrompts = selected.stream().map(panel -> panel.imagePrompt).toList();
         selectedPrompts.forEach(prompt -> validText(prompt, 1500, "Prompt de imagen del panel"));
         var request = new StudioPromptRequestBuilder().panelPrompts(selectedPrompts)
-                .source(sourceChunk.content).direction(direction).characters(characters)
+                .source(sourceChunk.content).direction(direction).memoryScope(Optional.of("novel:" + novelId)).characters(characters)
                 .availableCharacters(promptCharacters(novelId)).build();
         var generated = text.studioPrompt(request);
         String characterContext = text.characterContext(Stream.concat(

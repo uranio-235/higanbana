@@ -1,4 +1,16 @@
 CREATE SEQUENCE IF NOT EXISTS row_id_seq START 1;
+CREATE SEQUENCE IF NOT EXISTS memory_id_seq START 1;
+
+CREATE TABLE IF NOT EXISTS memory_entry (
+    id BIGINT PRIMARY KEY,
+    scope VARCHAR(255) NOT NULL,
+    content_hash VARCHAR(64) NOT NULL,
+    content TEXT NOT NULL,
+    embedding FLOAT[384] NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (scope, content_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory_entry(scope);
 
 CREATE TABLE IF NOT EXISTS ai_response_cache (
     cache_key VARCHAR PRIMARY KEY,

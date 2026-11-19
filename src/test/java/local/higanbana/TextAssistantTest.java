@@ -15,7 +15,10 @@ import local.higanbana.domain.ai.PanelPromptRequestBuilder;
 import local.higanbana.domain.ai.StudioPromptRequest;
 import local.higanbana.domain.ai.StudioPromptRequestBuilder;
 import local.higanbana.domain.ai.PromptCharacterBuilder;
+import local.higanbana.application.MemoryService;
+import local.higanbana.domain.memory.TextEmbedder;
 import local.higanbana.infrastructure.ai.TextAssistant;
+import local.higanbana.infrastructure.memory.InMemoryMemoryRepository;
 import java.util.Map;
 import java.time.Duration;
 import static org.assertj.core.api.Assertions.*;
@@ -99,7 +102,13 @@ class TextAssistantTest {
 
         private TextAssistant assistant(String mode, String baseUrl, String key, String model,
                                                                    ObjectMapper mapper, RestClient.Builder builder, InMemoryAiResponseCache cache) {
-                return new TextAssistant(mode, baseUrl, key, model, mapper, builder, cache, Duration.ofDays(30));
+                TextEmbedder embedder = text -> {
+                        float[] vector = new float[MemoryService.EMBEDDING_DIMENSIONS];
+                        vector[Math.floorMod(text.hashCode(), vector.length)] = 1;
+                        return vector;
+                };
+                return new TextAssistant(mode, baseUrl, key, model, mapper, builder, cache,
+                        new MemoryService(embedder, new InMemoryMemoryRepository()), Duration.ofDays(30));
         }
 
         @Test void nvidiaRequiresTextModelAndDoesNotAcceptTextAsMode() {
@@ -299,6 +308,7 @@ class TextAssistantTest {
                 .andExpect(jsonPath("$.messages[2].tool_call_id").value("call_characters"))
                 .andExpect(jsonPath("$.messages[2].content", org.hamcrest.Matchers.containsString("Cabello corto, ojos grises.")))
                 .andExpect(jsonPath("$.messages[2].content", org.hamcrest.Matchers.containsString("Lunar en la mejilla.")))
+                .andExpect(jsonPath("$.messages[2].content", org.hamcrest.Matchers.containsString("similarity")))
                 .andExpect(jsonPath("$.messages[2].content", org.hamcrest.Matchers.not(
                         org.hamcrest.Matchers.containsString("Trenza larga"))))
                 .andRespond(withSuccess(completion(finalJson), MediaType.APPLICATION_JSON));

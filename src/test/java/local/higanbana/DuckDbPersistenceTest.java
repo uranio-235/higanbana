@@ -3,6 +3,7 @@ package local.higanbana;
 import local.higanbana.application.Workflow;
 import local.higanbana.application.CharacterManager;
 import local.higanbana.application.CoverManager;
+import local.higanbana.application.MemoryService;
 import local.higanbana.domain.entity.Novel;
 import local.higanbana.domain.entity.ChunkPlan;
 import local.higanbana.domain.entity.Chunk;
@@ -11,6 +12,8 @@ import local.higanbana.domain.entity.PanelPlan;
 import local.higanbana.domain.entity.PanelPlanConfirmation;
 import local.higanbana.infrastructure.ai.JpaAiResponseCache;
 import local.higanbana.infrastructure.ai.TextAssistant;
+import local.higanbana.domain.memory.TextEmbedder;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,6 +29,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.when;
 
 @SpringBootTest
 class DuckDbPersistenceTest {
@@ -44,12 +48,40 @@ class DuckDbPersistenceTest {
     @Autowired JpaAiResponseCache cache;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager em;
+    @Autowired MemoryService memory;
     @MockitoSpyBean TextAssistant text;
+    @MockitoBean TextEmbedder embedder;
 
     @org.junit.jupiter.api.BeforeEach
     void stubStudioPrompt() {
         doReturn(new local.higanbana.domain.ai.CachedTextBuilder().text("Propuesta de prueba.").cacheKey("test-key").build())
                 .when(text).studioPrompt(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void storesAndReadsMemoriesByDuckDbCosineSimilarity() {
+        String scope = "test-memory-" + java.util.UUID.randomUUID();
+        when(embedder.embed("Memoria de Aiko con una marca en la mejilla.")).thenReturn(vector(0));
+        when(embedder.embed("Memoria sobre un faro y la lluvia.")).thenReturn(vector(1));
+        when(embedder.embed("consulta cercana")).thenReturn(vector(0));
+        when(embedder.embed("No debe aparecer en esta búsqueda.")).thenReturn(vector(0));
+
+        memory.remember(scope, "Memoria de Aiko con una marca en la mejilla.");
+        memory.remember(scope, "Memoria sobre un faro y la lluvia.");
+        memory.remember(scope + "-other", "No debe aparecer en esta búsqueda.");
+
+        var matches = memory.search(scope, "consulta cercana", 5);
+
+        assertThat(matches).extracting(local.higanbana.domain.memory.MemoryMatch::content).containsExactly(
+                "Memoria de Aiko con una marca en la mejilla.", "Memoria sobre un faro y la lluvia.");
+        assertThat(matches.getFirst().similarity()).isCloseTo(1.0, org.assertj.core.data.Offset.offset(0.00001));
+        assertThat(matches.get(1).similarity()).isCloseTo(0.0, org.assertj.core.data.Offset.offset(0.00001));
+    }
+
+    private float[] vector(int activeDimension) {
+        float[] vector = new float[MemoryService.EMBEDDING_DIMENSIONS];
+        vector[activeDimension] = 1.0f;
+        return vector;
     }
 
     @Test
@@ -223,7 +255,8 @@ class DuckDbPersistenceTest {
             .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess(firstResponse, org.springframework.http.MediaType.APPLICATION_JSON));
         server.expect(org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo("https://provider.test/v1/chat/completions"))
             .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess(secondResponse, org.springframework.http.MediaType.APPLICATION_JSON));
-        var realAssistant = new TextAssistant("nvidia", "https://provider.test", "test-key", "test-model", mapper, builder, cache, Duration.ofDays(1));
+        var realAssistant = new TextAssistant("nvidia", "https://provider.test", "test-key", "test-model", mapper, builder,
+            cache, memory, Duration.ofDays(1));
         org.mockito.Mockito.doAnswer(invocation -> realAssistant.studioPrompt(invocation.getArgument(0)))
             .when(text).studioPrompt(org.mockito.ArgumentMatchers.any());
 
@@ -438,7 +471,8 @@ class DuckDbPersistenceTest {
 
         doReturn(java.util.List.of("Prompt regenerado uno.", "Prompt regenerado dos."))
                 .when(text).imagePanelPrompts(new local.higanbana.domain.ai.PanelPromptRequestBuilder()
-                        .source(chunk.content).count(2).direction("Separar acciones").build());
+                    .source(chunk.content).count(2).direction("Separar acciones")
+                    .memoryScope(java.util.Optional.of("novel:" + novel.id)).build());
         workflow.proposePanels(novel.id, chunk.id, 2, "Separar acciones");
         em.flush();
         em.clear();
@@ -480,7 +514,8 @@ class DuckDbPersistenceTest {
 
         doReturn(java.util.List.of("Prompt NVIDIA nuevo.")).when(text)
                 .imagePanelPrompts(new local.higanbana.domain.ai.PanelPromptRequestBuilder()
-                        .source(chunk.content).count(1).direction("Actualizar").build());
+                    .source(chunk.content).count(1).direction("Actualizar")
+                    .memoryScope(java.util.Optional.of("novel:" + novel.id)).build());
         workflow.proposePanels(novel.id, chunk.id, 1, "Actualizar");
         em.flush();
         em.clear();

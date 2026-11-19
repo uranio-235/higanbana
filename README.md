@@ -265,8 +265,31 @@ To return to demo, set `app.text-mode=demo` in the local file and restart.
 The active DuckDB schema is `src/main/resources/db/duckdb/schema.sql`, applied
 idempotently on startup. Add experimental schema changes there. H2 tests continue
 to run the test Liquibase changelog independently. The AI response cache table is
-created in both schemas. DuckDB vector search/embeddings
-are not wired into the application yet.
+created in both schemas. DuckDB stores 384-dimensional memory embeddings in
+`FLOAT[384]` arrays and ranks them with `array_cosine_similarity`; the H2 test
+profile stores JSON vectors and computes cosine similarity in Java.
+
+## Local Memory RAG
+
+Character lookups index visual sheets as deduplicated memories scoped to their
+novel and character. `CharacterLookup` retrieves up to three memories and gives
+the text model each memory's cosine similarity. Embeddings run locally through
+ONNX Runtime for Java and the DJL Hugging Face tokenizer; model weights are not
+bundled with the application.
+
+Run the downloader from the project root. It places both files beside itself
+and leaves existing files untouched:
+
+```powershell
+.\memory-model\download-model.ps1
+```
+
+The ONNX file and tokenizer are ignored by Git. The app and smoke test default to
+`memory-model/model.onnx` and `memory-model/tokenizer.json`; override them with
+`HIGANBANA_MEMORY_ONNX` and `HIGANBANA_MEMORY_TOKENIZER` if stored elsewhere. The
+downloaded quantized ONNX targets x64 CPUs with AVX2. Without local model files,
+memory-assisted character prompt generation reports an explicit error and the
+smoke test is skipped.
 
 ## Verified Build
 
@@ -277,6 +300,7 @@ Pinned, resolvable Maven Central releases:
 | Java | 21 (verified runtime/JDK 21.0.13) |
 | Spring Boot | 3.5.7 |
 | Spring AI | 1.1.0 (documented Boot 3.4/3.5 compatibility) |
+| ONNX Runtime Java / DJL tokenizer | 1.23.2 / 0.39.0 |
 | Maven / Wrapper plugin | 3.9.11 / 3.3.4, official only-script wrapper |
 | DuckDB JDBC / engine | 2.0.0.1 / 2.0.0.1 |
 | PDFBox / Batik | 3.0.8 / 1.20 |
@@ -284,21 +308,22 @@ Pinned, resolvable Maven Central releases:
 | Liquibase / H2 (tests only) | 4.31.1 / 2.3.232, Boot-managed |
 | HTMX / Lucide | 2.0.4 / 0.468.0, vendored with licenses |
 
-The POM includes MVC, Thymeleaf, Validation, Data JPA, DuckDB JDBC, PDFBox/Batik,
-Liquibase/H2 for tests, Spring AI OpenAI, and Boot test support.
+The POM includes MVC, Thymeleaf, Validation, Data JPA, DuckDB JDBC, ONNX Runtime,
+the DJL Hugging Face tokenizer, PDFBox/Batik, Liquibase/H2 for tests, Spring AI
+OpenAI, and Boot test support.
 
 `./mvnw.cmd clean verify` runs lossless segmentation tests, service state/selection
 tests, a complete seven-screen MockMvc/H2 workflow, DuckDB JPA startup and sequence
 tests, character persistence and orphan removal, prompt snapshots, multipart/CSRF/
-ownership, and H2 test isolation, mock NVIDIA HTTP contract tests, DuckDB/H2 cache
-persistence, expiry, cache hits, request-key separation, invalid-response handling,
-and confirmation of chunks against DuckDB. The verified suite passes 58 tests; see
-`target/surefire-reports` for results. The complete demo workflow was also checked
-in a browser: zero reader images before approval and one afterwards. Desktop and
-390 px mobile screenshots were reviewed; all six mobile views had no page-width
-overflow or broken images. The new characters screen and two-panel/character
-selection were additionally verified on desktop. Stop a running JAR before
-rebuilding it on Windows.
+ownership, H2 test isolation, mock NVIDIA HTTP contract tests, DuckDB/H2 cache and
+memory persistence, similarity ranking, and confirmation of chunks against DuckDB.
+The local ONNX smoke test runs when the model and tokenizer files are present; it is
+skipped when they are absent. See `target/surefire-reports` for the latest results.
+The complete demo workflow was also checked in a browser: zero reader images before
+approval and one afterwards. Desktop and 390 px mobile screenshots were reviewed;
+all six mobile views had no page-width overflow or broken images. The new characters
+screen and two-panel/character selection were additionally verified on desktop.
+Stop a running JAR before rebuilding it on Windows.
 The real app was started against DuckDB and loaded the four stored novels, including
 the 35,000-character source.
 These are database checks, not a claim of live NVIDIA/image inference verification.
@@ -314,6 +339,10 @@ These are database checks, not a claim of live NVIDIA/image inference verificati
 - `src/main/resources/db/duckdb/schema.sql`: active DuckDB tables and indexes.
 - `src/main/java/local/higanbana/infrastructure/ai`: NVIDIA client and persistent
   validated-response cache; `JdbcAiResponseCache` is backed by DuckDB JDBC.
+- `src/main/java/local/higanbana/application/MemoryService.java`: local text
+  embeddings, scoped memory writes, and similarity-ranked retrieval.
+- `src/main/java/local/higanbana/infrastructure/memory`: local ONNX inference and
+  DuckDB/H2 memory repository adapters.
 - `src/main/java/local/higanbana/infrastructure/ai/TextAssistant.java`: NVIDIA
   text provider and bounded narrative segmentation.
 - `src/main/java/local/higanbana/infrastructure/image`: image-provider contract
@@ -335,4 +364,5 @@ These are database checks, not a claim of live NVIDIA/image inference verificati
 - `src/test/resources/application-test.properties`: H2-only test configuration.
 - `.azure/integration-plan.md`: package map, route inventory, and verification notes.
 
-This is an experimental learning project; DuckDB VSS/embedding search is a later step.
+This is an experimental learning project; the current memory search uses exact
+DuckDB cosine scans. An approximate HNSW/VSS index remains a later optimization.
